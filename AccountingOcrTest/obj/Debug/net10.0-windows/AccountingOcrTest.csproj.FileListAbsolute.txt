@@ -25,3 +25,5 @@ D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\x64\leptonica-1.82.0.dll
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\x64\tesseract50.dll
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\Tesseract.dll
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\Accounti.10F90B5F.Up2Date
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\ApiKeyManagerWindow.baml
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\ApiKeyManagerWindow.g.cs
