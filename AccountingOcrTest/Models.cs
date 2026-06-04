@@ -8,6 +8,7 @@ namespace AccountingOcrTest
     public class InvoiceData
     {
         public string quy_trinh_suy_luan { get; set; }
+        public string ten_nguoi_giao { get; set; }
         public string ngay_giao { get; set; }
         public string khach_hang { get; set; }
         public string diem_giao { get; set; }

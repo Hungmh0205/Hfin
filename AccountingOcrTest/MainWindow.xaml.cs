@@ -26,6 +26,9 @@ namespace AccountingOcrTest
         private ObservableCollection<ProcessingItem> _items = new ObservableCollection<ProcessingItem>();
         private ICollectionView _itemsView;
         private CancellationTokenSource _cts;
+        
+        private static readonly string ShippersFilePath = "shippers.json";
+        private ObservableCollection<string> _shippers = new ObservableCollection<string>();
 
         // Fix #3: Static HttpClient — avoids socket exhaustion and DNS caching issues
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -47,6 +50,9 @@ namespace AccountingOcrTest
             ItemsListBox.ItemsSource = _items;
             _itemsView = CollectionViewSource.GetDefaultView(_items);
             _itemsView.Filter = SearchFilter;
+            
+            LoadShippers();
+            ShipperSelector.ItemsSource = _shippers;
         }
 
         private bool SearchFilter(object item)
@@ -74,6 +80,15 @@ namespace AccountingOcrTest
 
         private void AddImagesBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (string.IsNullOrWhiteSpace(ShipperSelector.Text))
+            {
+                MessageBox.Show("Vui lòng nhập hoặc chọn Tên người giao hàng trước khi thêm ảnh.", "Bắt buộc", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ShipperSelector.Focus();
+                return;
+            }
+
+            string currentShipper = ShipperSelector.Text.Trim();
+
             OpenFileDialog openFileDialog = new OpenFileDialog
             {
                 Filter = "Image Files|*.jpg;*.jpeg;*.png;*.webp",
@@ -88,7 +103,7 @@ namespace AccountingOcrTest
                     _items.Add(new ProcessingItem 
                     { 
                         FilePath = file, 
-                        SmartName = System.IO.Path.GetFileName(file),
+                        SmartName = $"[{currentShipper}] - {System.IO.Path.GetFileName(file)}",
                         Status = ProcessStatus.Waiting
                     });
                 }
@@ -143,6 +158,20 @@ namespace AccountingOcrTest
 
         private async void StartBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (string.IsNullOrWhiteSpace(ShipperSelector.Text))
+            {
+                MessageBox.Show("Vui lòng nhập hoặc chọn Tên người giao hàng trước khi bắt đầu.", "Bắt buộc", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ShipperSelector.Focus();
+                return;
+            }
+
+            string currentShipper = ShipperSelector.Text.Trim();
+            if (!_shippers.Contains(currentShipper))
+            {
+                _shippers.Add(currentShipper);
+                SaveShippers();
+            }
+
             if (_apiKeyManager.Keys.Count == 0)
             {
                 MessageBox.Show("Vui lòng cài đặt API Key trước khi bắt đầu.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -170,7 +199,7 @@ namespace AccountingOcrTest
                 selectedModel = comboItem.Content.ToString();
             }
 
-            int concurrencyLevel = _apiKeyManager.Keys.Count * 2;
+            int concurrencyLevel = Math.Min(waitingItems.Count, _apiKeyManager.Keys.Count * 2);
             if (concurrencyLevel == 0) concurrencyLevel = 1; // Fallback nếu không có key
 
             int total = waitingItems.Count;
@@ -208,14 +237,15 @@ namespace AccountingOcrTest
                             string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
                             try
                             {
-                                await ProcessImageAsync(item, apiKey, selectedModel, _cts.Token);
+                                await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
                             }
                             catch (Exception ex) when (!_cts.Token.IsCancellationRequested &&
                                 (ex.Message.Contains("TooManyRequests") || ex.Message.Contains("429")))
                             {
                                 string fallbackModel = selectedModel == "gemini-3.5-flash" ? "gemini-3-flash-preview" : "gemini-3.5-flash";
-                                Logger.Log($"[RateLimit] Model {selectedModel} báo quá tải. Chuyển sang model dự phòng {fallbackModel}...");
-                                await ProcessImageAsync(item, apiKey, fallbackModel, _cts.Token);
+                                Logger.Log($"[RateLimit] Model {selectedModel} báo quá tải. Chờ 3s rồi chuyển sang model dự phòng {fallbackModel}...");
+                                await Task.Delay(3000, _cts.Token);
+                                await ProcessImageAsync(item, apiKey, fallbackModel, currentShipper, _cts.Token);
                             }
 
                             int current = Interlocked.Increment(ref completed);
@@ -224,7 +254,8 @@ namespace AccountingOcrTest
                             Application.Current.Dispatcher.Invoke(() =>
                             {
                                 item.Status = ProcessStatus.Success;
-                                item.SmartName = $"{item.Data.ngay_giao} - {item.Data.khach_hang} - {item.Data.diem_giao}";
+                                if (item.Data != null)
+                                    item.SmartName = $"[{item.Data.ten_nguoi_giao}] - {item.Data.ngay_giao} - {item.Data.khach_hang} - {item.Data.diem_giao}";
 
                                 // Update progress
                                 ProgressBar.Value = current;
@@ -317,7 +348,7 @@ namespace AccountingOcrTest
             return resized;
         }
 
-        private async Task ProcessImageAsync(ProcessingItem item, string apiKey, string modelName, CancellationToken token)
+        private async Task ProcessImageAsync(ProcessingItem item, string apiKey, string modelName, string shipperName, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
 
@@ -378,6 +409,10 @@ namespace AccountingOcrTest
             }
 
             item.Data = await CallGeminiApi(base64Image, mimeType, apiKey, modelName, token);
+            if (item.Data != null)
+            {
+                item.Data.ten_nguoi_giao = shipperName;
+            }
         }
 
         private async Task<InvoiceData> CallGeminiApi(string base64Image, string mimeType, string apiKey, string modelName, CancellationToken token)
@@ -394,14 +429,22 @@ Bước 1: Phân tích Cấu trúc Bảng và Thông tin chung
 
 Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Viết tay (Ink-to-Text & Symbol Analysis) - QUAN TRỌNG NHẤT
 - Phân tách rõ ràng giữa mực in máy và mực viết tay (mực màu xanh, đen mờ, đỏ hoặc nét bút viết tay).
-- Quét qua từng dòng dữ liệu hàng hóa và áp dụng QUY TẮC NHẬN DIỆN KÝ HIỆU VIẾT TAY TRÊN HÓA ĐƠN ĐỐI SOÁT VIỆT NAM:
-  1. BẤT KỲ nét gạch ngang '-', nét gạch chéo '/', nét kẻ dọc '|', nét mũi tên (->), hoặc một đường gạch chéo dài kéo qua nhiều dòng. CHÚ Ý CỰC KỲ QUAN TRỌNG: Nét gạch này KHÔNG NHẤT THIẾT phải đè lên cột Số lượng, nó CÓ THỂ vắt qua cột Đơn vị tính (ĐVT), cột Đơn giá, hoặc cột Thành tiền. Tóm lại, chỉ cần TRÊN DÒNG HÀNG HÓA ĐÓ bị nét mực gạch xuyên qua (dù là ngang, dọc, hay chéo) VÀ KHÔNG CÓ con số viết tay nào ghi chú kế bên:
-     -> ĐÂY LÀ KÝ HIỆU GẠCH BỎ / HỦY GIAO. -> Số lượng thực nhận (sl_nhan) = 0. Tự tin gán bằng 0 cho TẤT CẢ các dòng bị đường mực kéo qua (kể cả kéo qua ĐVT/Đơn giá).
-  2. Dấu tích '✓' kèm con số viết tay rõ ràng chỉnh sửa bên cạnh (ví dụ: '✓ 05', '✓ 5', '✓ 10'...):
-     -> ĐÂY LÀ KÝ HIỆU XÁC NHẬN GIAO THỰC TẾ. -> Số lượng thực nhận (sl_nhan) = <con số viết tay đó>.
-  3. Không có bất kỳ nét bút viết tay nào (chỉ có mực in máy):
-     -> Giao đầy đủ. -> Số lượng thực nhận (sl_nhan) = Số lượng in sẵn gốc (sl_xuat).
-  4. Nếu số lượng viết tay hoặc in sẵn CÓ DẤU TRỪ (số âm, ví dụ: -2, -5...), điều này có nghĩa là 'nợ hàng' (khách đặt nhưng không có hàng). Hãy ghi nhận CHÍNH XÁC giá trị âm đó vào `sl_nhan` hoặc `sl_xuat` (tùy thuộc vào số âm đó được viết tay hay in sẵn). Được phép ghi nhận số âm.
+- MỖI DÒNG HÀNG HÓA PHẢI ĐƯỢC PHÂN TÍCH ĐỘC LẬP. Không được suy đoán kết quả dòng này dựa trên dòng khác. Phải có BẰNG CHỨNG THỊ GIÁC CỤ THỂ cho từng dòng.
+- Quét qua từng dòng dữ liệu hàng hóa và áp dụng QUY TẮC theo THỨ TỰ ƯU TIÊN SAU (rule trên THẮNG rule dưới):
+
+  ƯU TIÊN CAO NHẤT - Rule A: Dấu tích '✓' kèm con số viết tay rõ ràng (ví dụ: '✓ 05', '✓ 5', '✓ 10'...):
+     -> ĐÂY LÀ KÝ HIỆU XÁC NHẬN GIAO THỰC TẾ. -> sl_nhan = <con số viết tay đó>.
+     -> Rule này LUÔN THẮNG mọi rule khác. Dù dòng đó có bị đường kẻ đi qua, NẾU CÓ ✓ kèm số thì vẫn lấy số đó làm sl_nhan.
+
+  ƯU TIÊN 2 - Rule B: Đường gạch bỏ / hủy giao. BẤT KỲ đường chữ 'Z', nét gạch chéo 'X', nét gạch ngang '-', nét gạch chéo '/', nét kẻ dọc '|', nét mũi tên (->), hoặc đường gạch tay chéo dài. Nét gạch CÓ THỂ vắt qua cột ĐVT, Đơn giá, hoặc Thành tiền. Chỉ cần TRÊN DÒNG ĐÓ bị nét mực gạch xuyên qua VÀ KHÔNG CÓ dấu ✓ kèm số:
+     -> sl_nhan = 0.
+     CẢNH BÁO CỰC KỲ QUAN TRỌNG VỀ PHẠM VI ĐƯỜNG KẺ: Khi thấy một đường gạch chéo dài, bạn phải XÁC NHẬN CHÍNH XÁC BẰNG THỊ GIÁC rằng đường đó THỰC SỰ ĐI QUA dòng nào. TUYỆT ĐỐI KHÔNG ĐƯỢC SUY ĐOÁN hoặc NGOẠI SUY rằng đường kẻ kéo dài hơn thực tế. Ví dụ: nếu đường kẻ kết thúc tại dòng 100 thì KHÔNG ĐƯỢC gán sl_nhan=0 cho dòng 110, 120, 130. Chỉ những dòng mà mắt thường nhìn thấy có nét mực ĐI XUYÊN QUA mới được đánh dấu hủy.
+
+  ƯU TIÊN 3 - Rule C (MẶC ĐỊNH): Không có bất kỳ nét bút viết tay nào (chỉ có mực in máy):
+     -> Giao đầy đủ. -> sl_nhan = sl_xuat.
+     LƯU Ý: Đây là TRƯỜNG HỢP MẶC ĐỊNH. Nếu một dòng không bị gạch bỏ và không có ✓, thì PHẢI giữ nguyên sl_nhan = sl_xuat. KHÔNG ĐƯỢC gán sl_nhan = 0 trừ khi có BẰNG CHỨNG THỊ GIÁC rõ ràng của nét gạch bỏ TRÊN CHÍNH DÒNG ĐÓ.
+
+  Rule D: Nếu số lượng viết tay hoặc in sẵn CÓ DẤU TRỪ (số âm, ví dụ: -2, -5...), điều này có nghĩa là 'nợ hàng'. Ghi nhận CHÍNH XÁC giá trị âm đó. Được phép ghi nhận số âm.
 
 Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 - Với mỗi mặt hàng, bạn phải có sl_xuat (Số lượng in trên hóa đơn) và sl_nhan (Số lượng giao thực tế, tính toán từ Bước 2).
@@ -487,6 +530,72 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 {
                     throw new Exception("Gemini không trả về kết quả dự kiến.");
                 }
+            }
+        }
+
+        private void NewSessionBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Chặn tạo phiên mới nếu batch đang chạy
+            if (_cts != null && !_cts.Token.IsCancellationRequested && _items.Any(x => x.Status == ProcessStatus.Processing))
+            {
+                var cancelResult = MessageBox.Show("Đang có batch xử lý chạy nền. Bạn có muốn HỦY batch hiện tại và tạo phiên mới?", "Batch đang chạy", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (cancelResult == MessageBoxResult.No) return;
+                _cts.Cancel();
+            }
+
+            if (_items.Any(x => x.Status == ProcessStatus.Success))
+            {
+                var result = MessageBox.Show("Bạn có hóa đơn đã xử lý thành công nhưng chưa Xuất/Lưu.\n\nBạn có chắc chắn muốn Xóa toàn bộ dữ liệu hiện tại để tạo phiên mới không?", "Cảnh báo mất dữ liệu", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (result == MessageBoxResult.No) return;
+            }
+
+            _items.Clear();
+            ProgressBar.Visibility = Visibility.Collapsed;
+            ProgressText.Visibility = Visibility.Collapsed;
+            CancelBtn.Visibility = Visibility.Collapsed;
+            StartBtn.IsEnabled = true;
+            StartBtn.Content = "▶ Bắt đầu xử lý";
+            
+            PreviewImage.Source = null;
+            NgayGiaoText.Text = "";
+            KhachHangText.Text = "";
+            DiemGiaoText.Text = "";
+            ProductsGrid.ItemsSource = null;
+            
+            ShipperSelector.Text = "";
+            ShipperSelector.Focus();
+        }
+
+        private void LoadShippers()
+        {
+            if (File.Exists(ShippersFilePath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(ShippersFilePath);
+                    var list = JsonSerializer.Deserialize<List<string>>(json);
+                    if (list != null)
+                    {
+                        foreach (var s in list) _shippers.Add(s);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[App] Lỗi tải file shippers.json: {ex.Message}");
+                }
+            }
+        }
+
+        private void SaveShippers()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(_shippers.ToList());
+                File.WriteAllText(ShippersFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[App] Lỗi lưu file shippers.json: {ex.Message}");
             }
         }
     }

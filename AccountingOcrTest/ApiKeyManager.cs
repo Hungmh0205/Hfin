@@ -82,7 +82,10 @@ namespace AccountingOcrTest
                         }
                     }
 
-                    var availableKey = Keys.FirstOrDefault(k => k.Status == KeyStatus.Ready && k.RequestsInLastMinute < MaxRequestsPerMinute);
+                    var availableKey = Keys
+                        .Where(k => k.Status == KeyStatus.Ready && k.RequestsInLastMinute < MaxRequestsPerMinute)
+                        .OrderBy(k => k.LastUsed)
+                        .FirstOrDefault();
 
                     if (availableKey != null)
                     {

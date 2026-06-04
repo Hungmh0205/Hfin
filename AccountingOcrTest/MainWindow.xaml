@@ -19,6 +19,8 @@
                 <StackPanel Orientation="Horizontal">
                     <Button Content="Cài đặt API Key" Padding="10,5" Click="SettingsBtn_Click"/>
                     <Button Content="Thêm Ảnh" Margin="10,0,0,0" Padding="10,5" Click="AddImagesBtn_Click"/>
+                    <TextBlock Text="Người giao:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
+                    <ComboBox x:Name="ShipperSelector" Width="150" IsEditable="True" VerticalContentAlignment="Center" Padding="5,0"/>
                     <TextBlock Text="Model:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
                     <ComboBox x:Name="ModelSelector" Width="200" SelectedIndex="0" VerticalContentAlignment="Center" Padding="5,0">
                         <ComboBoxItem Content="gemini-3.5-flash"/>
@@ -27,6 +29,7 @@
                 </StackPanel>
                 
                 <StackPanel Orientation="Horizontal" Grid.Column="2" VerticalAlignment="Center">
+                    <Button x:Name="NewSessionBtn" Content="🔄 Tạo phiên mới" Padding="10,5" Background="#f97316" Foreground="White" FontWeight="Bold" Click="NewSessionBtn_Click" Margin="0,0,10,0"/>
                     <TextBlock x:Name="ProgressText" Text="0/0" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed" FontWeight="Bold" Foreground="#6366f1"/>
                     <ProgressBar x:Name="ProgressBar" Width="150" Height="18" Margin="0,0,10,0" Visibility="Collapsed" Foreground="#10b981"/>
                     <Button x:Name="CancelBtn" Content="⏹ Hủy" Padding="10,5" Background="#ef4444" Foreground="White" FontWeight="Bold" Click="CancelBtn_Click" Visibility="Collapsed" Margin="0,0,10,0"/>
