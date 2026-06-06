@@ -19,6 +19,7 @@ using System.Windows.Data;
 using System.Windows.Media.Imaging;
 using Tesseract;
 using ClosedXML.Excel;
+using DuckDB.NET.Data;
 
 namespace AccountingOcrTest
 {
@@ -40,6 +41,11 @@ namespace AccountingOcrTest
         private ObservableCollection<ExcelConfigItem> _excelConfigs = new ObservableCollection<ExcelConfigItem>();
         private static readonly string ConfigsFilePath = "excel_configs.json";
         private static readonly string RawMaterialDirName = "raw_material";
+
+        // DuckDB staging variables
+        private static readonly string StagingDbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "accounting_staging.db");
+        private ObservableCollection<StagingItem> _stagingItems = new ObservableCollection<StagingItem>();
+        private static readonly object DbWriteLock = new object();
 
         // Fix #3: Static HttpClient — avoids socket exhaustion and DNS caching issues
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -81,6 +87,10 @@ namespace AccountingOcrTest
             // Bind homepage config list and load
             HomeConfigsGrid.ItemsSource = _excelConfigs;
             LoadExcelConfigs();
+
+            // Setup DuckDB Staging Database
+            InitStagingDatabase();
+            LoadStagingItemsFromDb();
         }
 
         private bool SearchFilter(object item)
@@ -126,6 +136,7 @@ namespace AccountingOcrTest
 
             if (openFileDialog.ShowDialog() == true)
             {
+                ContinueBtn.Visibility = Visibility.Collapsed;
                 foreach (var file in openFileDialog.FileNames)
                 {
                     _items.Add(new ProcessingItem 
@@ -326,6 +337,10 @@ namespace AccountingOcrTest
             }
             else
             {
+                if (_items.Any(x => x.Status == ProcessStatus.Success))
+                {
+                    ContinueBtn.Visibility = Visibility.Visible;
+                }
                 MessageBox.Show("Đã hoàn tất xử lý danh sách hóa đơn!", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
@@ -578,6 +593,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             KhachHangText.Text = "";
             DiemGiaoText.Text = "";
             ProductsGrid.ItemsSource = null;
+            ContinueBtn.Visibility = Visibility.Collapsed;
             
             ShipperSelector.Text = "";
             ShipperSelector.Focus();
@@ -952,8 +968,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 SalesDataGrid.ItemsSource = null;
                 _refItems.Clear();
 
-                // Run Reference and Sales sheet processing in parallel
-                var refTask = Task.Run(() =>
+                // Run Reference and Sales sheet processing sequentially (ClosedXML is NOT thread-safe)
+                var items = await Task.Run(() =>
                 {
                     var resultList = new List<ReferenceItem>();
                     var worksheet = _refWorkbook.Worksheet(refSheetName);
@@ -1021,7 +1037,12 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     return resultList;
                 });
 
-                var salesTask = Task.Run(() =>
+                foreach (var item in items)
+                {
+                    _refItems.Add(item);
+                }
+
+                var salesDt = await Task.Run(() =>
                 {
                     var dt = new DataTable();
                     var worksheet = _refWorkbook.Worksheet(salesSheetName);
@@ -1082,15 +1103,6 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     return dt;
                 });
 
-                await Task.WhenAll(refTask, salesTask);
-
-                var items = await refTask;
-                foreach (var item in items)
-                {
-                    _refItems.Add(item);
-                }
-
-                var salesDt = await salesTask;
                 SalesDataGrid.ItemsSource = salesDt.DefaultView;
             }
             catch (Exception ex)
@@ -1104,5 +1116,653 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 HideRefLoading();
             }
         }
+
+        private void InitStagingDatabase()
+        {
+            try
+            {
+                string connStr = $"Data Source={StagingDbPath}";
+                using (var connection = new DuckDBConnection(connStr))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = @"
+                            CREATE TABLE IF NOT EXISTS staging_items (
+                                id VARCHAR PRIMARY KEY,
+                                file_name VARCHAR,
+                                ngay_giao VARCHAR,
+                                khach_hang VARCHAR,
+                                diem_giao VARCHAR,
+                                nguoi_giao VARCHAR,
+                                ten_hang_goc VARCHAR,
+                                ten_hang_khop VARCHAR,
+                                hst VARCHAR,
+                                don_vi VARCHAR,
+                                sl_xuat DOUBLE,
+                                sl_nhan DOUBLE,
+                                sl_hong DOUBLE,
+                                ghi_chu VARCHAR,
+                                status VARCHAR DEFAULT 'Success',
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            );";
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                Logger.Log("[DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[DuckDB Lỗi] Không thể khởi tạo database: {ex.Message}");
+                MessageBox.Show($"Lỗi khởi tạo cơ sở dữ liệu DuckDB: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void LoadStagingItemsFromDb()
+        {
+            _stagingItems.Clear();
+            try
+            {
+                string connStr = $"Data Source={StagingDbPath}";
+                using (var connection = new DuckDBConnection(connStr))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = "SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu FROM staging_items WHERE status != 'Synced' ORDER BY created_at DESC;";
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                var item = new StagingItem
+                                {
+                                    Id = reader.GetString(0),
+                                    FileName = reader.GetString(1),
+                                    NgayGiao = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                                    KhachHang = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                                    DiemGiao = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                                    NguoiGiao = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                                    TenHangGoc = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                                    TenHangKhop = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                                    Hst = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                                    DonVi = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                                    SlXuat = reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                                    SlNhan = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                                    SlHong = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                                    GhiChu = reader.IsDBNull(13) ? "" : reader.GetString(13)
+                                };
+                                _stagingItems.Add(item);
+                            }
+                        }
+                    }
+                }
+                PreviewDataGrid.ItemsSource = _stagingItems;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[DuckDB Lỗi] LoadStagingItemsFromDb: {ex.Message}");
+                MessageBox.Show($"Lỗi tải dữ liệu xem trước: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void UpdateStagingItemInDb(StagingItem item)
+        {
+            try
+            {
+                string connStr = $"Data Source={StagingDbPath}";
+                using (var connection = new DuckDBConnection(connStr))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = @"
+                            UPDATE staging_items SET 
+                                ngay_giao = $ngay_giao, 
+                                khach_hang = $khach_hang, 
+                                diem_giao = $diem_giao, 
+                                nguoi_giao = $nguoi_giao, 
+                                ten_hang_khop = $ten_hang_khop, 
+                                hst = $hst, 
+                                don_vi = $don_vi,
+                                sl_xuat = $sl_xuat, 
+                                sl_nhan = $sl_nhan, 
+                                sl_hong = $sl_hong, 
+                                ghi_chu = $ghi_chu 
+                            WHERE id = $id;";
+                        
+                        cmd.Parameters.Add(new DuckDBParameter("ngay_giao", item.NgayGiao ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("khach_hang", item.KhachHang ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("diem_giao", item.DiemGiao ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", item.NguoiGiao ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", item.TenHangKhop ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("hst", item.Hst ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("don_vi", item.DonVi ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("sl_xuat", item.SlXuat));
+                        cmd.Parameters.Add(new DuckDBParameter("sl_nhan", item.SlNhan));
+                        cmd.Parameters.Add(new DuckDBParameter("sl_hong", item.SlHong));
+                        cmd.Parameters.Add(new DuckDBParameter("ghi_chu", item.GhiChu ?? ""));
+                        cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
+
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[DuckDB Lỗi] UpdateStagingItemInDb: {ex.Message}");
+            }
+        }
+
+        private async void ContinueBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var processedSuccessItems = _items.Where(x => x.Status == ProcessStatus.Success && x.Data != null).ToList();
+            if (processedSuccessItems.Count == 0)
+            {
+                MessageBox.Show("Không có dữ liệu hóa đơn nào đã xử lý thành công.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
+            if (activeConfig == null)
+            {
+                MessageBox.Show("Vui lòng chọn hoặc nạp một file cấu hình Excel hoạt động ở Trang chủ trước.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Filter out 'kg' units from reference list
+            var targetRefItems = _refItems.Where(x => !x.DonViTinh.Equals("kg", StringComparison.OrdinalIgnoreCase)).ToList();
+
+            ShowRefLoading("Đang đối soát sản phẩm và lưu vào DuckDB...");
+            
+            try
+            {
+                await Task.Run(() =>
+                {
+                    var queue = new ConcurrentQueue<ProcessingItem>(processedSuccessItems);
+                    int maxConcurrency = Math.Min(6, processedSuccessItems.Count);
+                    var tasks = new List<Task>();
+
+                    for (int i = 0; i < maxConcurrency; i++)
+                    {
+                        tasks.Add(Task.Run(() =>
+                        {
+                            while (queue.TryDequeue(out var item))
+                            {
+                                string fileName = Path.GetFileName(item.FilePath);
+                                var data = item.Data;
+                                if (data == null) continue;
+
+                                if (data.danh_sach_hang_hoa != null)
+                                {
+                                    foreach (var itemRow in data.danh_sach_hang_hoa)
+                                    {
+                                        double bestScore = 0.0;
+                                        var matchedItem = FuzzyMatcher.FindBestMatch(itemRow.ten_hang, targetRefItems, out bestScore);
+
+                                        string tenKhop = "";
+                                        string hst = "";
+                                        string donVi = "";
+
+                                        if (matchedItem != null && bestScore > 0.5)
+                                        {
+                                            tenKhop = matchedItem.TenHang;
+                                            hst = matchedItem.VietTat;
+                                            donVi = matchedItem.DonViTinh;
+                                        }
+
+                                        lock (DbWriteLock)
+                                        {
+                                            try
+                                            {
+                                                using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                                                {
+                                                    conn.Open();
+                                                    using (var cmd = conn.CreateCommand())
+                                                    {
+                                                        cmd.CommandText = @"
+                                                            INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status) 
+                                                            VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status);";
+
+                                                        cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
+                                                        cmd.Parameters.Add(new DuckDBParameter("file_name", fileName));
+                                                        cmd.Parameters.Add(new DuckDBParameter("ngay_giao", data.ngay_giao ?? ""));
+                                                        cmd.Parameters.Add(new DuckDBParameter("khach_hang", FuzzyMatcher.FormatKhachHang(data.khach_hang ?? "")));
+                                                        cmd.Parameters.Add(new DuckDBParameter("diem_giao", FuzzyMatcher.FormatDiemGiao(data.diem_giao ?? "")));
+                                                        cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", data.ten_nguoi_giao ?? ""));
+                                                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_goc", itemRow.ten_hang ?? ""));
+                                                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", tenKhop));
+                                                        cmd.Parameters.Add(new DuckDBParameter("hst", hst));
+                                                        cmd.Parameters.Add(new DuckDBParameter("don_vi", donVi));
+                                                        cmd.Parameters.Add(new DuckDBParameter("sl_xuat", itemRow.sl_xuat));
+                                                        cmd.Parameters.Add(new DuckDBParameter("sl_nhan", itemRow.sl_nhan));
+                                                        cmd.Parameters.Add(new DuckDBParameter("sl_hong", itemRow.sl_hong));
+                                                        cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
+                                                        cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
+
+                                                        cmd.ExecuteNonQuery();
+                                                    }
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Logger.Log($"[DuckDB Lỗi] Ghi staging_item: {ex.Message}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }));
+                    }
+
+                    Task.WaitAll(tasks.ToArray());
+                });
+
+                LoadStagingItemsFromDb();
+                ContinueBtn.Visibility = Visibility.Collapsed;
+                
+                // Switch to Preview Tab (Index 2 in MainTabControl)
+                MainTabControl.SelectedIndex = 2;
+                MessageBox.Show("Đối soát mờ hoàn tất! Đã chuyển sang tab Preview để kiểm tra dữ liệu.", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi đối soát dữ liệu: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                HideRefLoading();
+            }
+        }
+
+        private void ReloadPreviewBtn_Click(object sender, RoutedEventArgs e)
+        {
+            LoadStagingItemsFromDb();
+        }
+
+        private void DeletePreviewSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = _stagingItems.Where(x => x.IsSelected).ToList();
+            if (selected.Count == 0)
+            {
+                MessageBox.Show("Vui lòng chọn các dòng mặt hàng cần xóa.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show($"Bạn có chắc chắn muốn xóa {selected.Count} dòng đang chọn khỏi hàng đợi Preview?\nDữ liệu này sẽ mất vĩnh viễn và không ghi vào Excel.", "Xác nhận xóa", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (confirm == MessageBoxResult.Yes)
+            {
+                try
+                {
+                    using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                    {
+                        conn.Open();
+                        foreach (var item in selected)
+                        {
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                cmd.CommandText = "DELETE FROM staging_items WHERE id = $id;";
+                                cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                    }
+                    LoadStagingItemsFromDb();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Lỗi khi xóa: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void SelectAllPreviewChk_Click(object sender, RoutedEventArgs e)
+        {
+            bool isChecked = SelectAllPreviewChk.IsChecked ?? false;
+            foreach (var item in _stagingItems)
+            {
+                item.IsSelected = isChecked;
+            }
+        }
+
+        private void PreviewDataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction == DataGridEditAction.Commit && e.Row.Item is StagingItem stagingItem)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    // Recalculate SL Hỏng
+                    stagingItem.SlHong = stagingItem.SlXuat - stagingItem.SlNhan;
+
+                    // Automatically update hst and donVi if name is matched manually
+                    if (e.Column.Header.ToString().Contains("Tên khớp"))
+                    {
+                        var refMatch = _refItems.FirstOrDefault(x => x.TenHang.Equals(stagingItem.TenHangKhop, StringComparison.OrdinalIgnoreCase));
+                        if (refMatch != null)
+                        {
+                            stagingItem.Hst = refMatch.VietTat;
+                            stagingItem.DonVi = refMatch.DonViTinh;
+                        }
+                    }
+
+                    UpdateStagingItemInDb(stagingItem);
+                }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+
+        private async void CommitToExcelBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var itemsToCommit = _stagingItems.Where(x => x.IsSelected).ToList();
+            if (itemsToCommit.Count == 0)
+            {
+                MessageBox.Show("Vui lòng chọn ít nhất một dòng để ghi sổ Excel.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
+            if (activeConfig == null)
+            {
+                MessageBox.Show("Vui lòng chọn hoặc nạp một file cấu hình Excel hoạt động ở Trang chủ trước.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Check if file exists
+            if (!System.IO.File.Exists(activeConfig.LocalPath))
+            {
+                MessageBox.Show($"Không tìm thấy tệp Excel tại đường dẫn: {activeConfig.LocalPath}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // Check if file is locked
+            try
+            {
+                using (var stream = new System.IO.FileStream(activeConfig.LocalPath, System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None))
+                {
+                    // File is accessible
+                }
+            }
+            catch (System.IO.IOException ex)
+            {
+                MessageBox.Show($"Tệp Excel đang được mở hoặc bị khóa bởi ứng dụng khác (ví dụ: Microsoft Excel).\n\nVui lòng đóng tệp Excel tại:\n{activeConfig.LocalPath}\n\nSau đó thử lại!", "Tệp đang bị khóa", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Không thể truy cập tệp Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            ShowRefLoading("Đang ghi dữ liệu đơn luồng vào Excel...");
+
+            try
+            {
+                // Crucial step: Dispose open memory reference of Excel before modifying it
+                _refWorkbook?.Dispose();
+                _refWorkbook = null;
+
+                await Task.Run(() =>
+                {
+                    using (var workbook = new XLWorkbook(activeConfig.LocalPath))
+                    {
+                        var worksheet = workbook.Worksheet(activeConfig.SalesSheet);
+
+                        // Find column indexes based on header row names (row 1)
+                        var firstRow = worksheet.Row(1);
+                        int colCount = Math.Max(20, firstRow.LastCellUsed()?.Address.ColumnNumber ?? 20);
+
+                        int colDate = 2;
+                        int colCust = 3;
+                        int colDeliv = 4;
+                        int colShipper = 5;
+                        int colHst = 6;
+                        int colName = 7;
+                        int colUnit = 8;
+                        int colXuat = 9;
+                        int colHong = 10;
+                        int colNhan = 11;
+                        int colNote = 12;
+
+                        for (int c = 1; c <= colCount; c++)
+                        {
+                            string header = firstRow.Cell(c).Value.ToString().Trim().ToLower();
+                            if (header == "ngày" || header == "ngay") colDate = c;
+                            else if (header == "khách hàng" || header == "khach hang" || header == "khachhang") colCust = c;
+                            else if (header == "điểm giao" || header == "diem giao" || header == "diemgiao") colDeliv = c;
+                            else if (header == "người giao" || header == "nguoi giao" || header == "nguoigiao") colShipper = c;
+                            else if (header == "hst") colHst = c;
+                            else if (header == "tên hàng" || header == "ten hang" || header == "tenhang" || header == "sản phẩm") colName = c;
+                            else if (header == "đơn vị" || header == "don vi" || header == "đvt" || header == "dvt") colUnit = c;
+                            else if (header == "xuất" || header == "xuat") colXuat = c;
+                            else if (header == "hỏng" || header == "hong") colHong = c;
+                            else if (header == "nhận" || header == "nhan") colNhan = c;
+                            else if (header == "ghi chú" || header == "ghi chu") colNote = c;
+                        }
+
+                        // Find first empty row (where Date, Customer, and Hst are all blank) to write to, preserving template formulas and format
+                        int lastRowNumber = worksheet.LastRowUsed()?.RowNumber() ?? 1;
+                        int targetRow = 2; // Start scanning after header row
+                        for (int r = 2; r <= lastRowNumber + 1; r++)
+                        {
+                            var dateVal = worksheet.Cell(r, colDate).Value.ToString().Trim();
+                            var custVal = worksheet.Cell(r, colCust).Value.ToString().Trim();
+                            var hstVal = worksheet.Cell(r, colHst).Value.ToString().Trim();
+
+                            if (string.IsNullOrEmpty(dateVal) && string.IsNullOrEmpty(custVal) && string.IsNullOrEmpty(hstVal))
+                            {
+                                targetRow = r;
+                                break;
+                            }
+                        }
+
+                        foreach (var item in itemsToCommit)
+                        {
+                            var row = worksheet.Row(targetRow);
+
+                            row.Cell(colDate).Value = item.NgayGiao;
+                            row.Cell(colCust).Value = FuzzyMatcher.FormatKhachHang(item.KhachHang);
+                            row.Cell(colDeliv).Value = FuzzyMatcher.FormatDiemGiao(item.DiemGiao);
+                            row.Cell(colShipper).Value = item.NguoiGiao;
+                            row.Cell(colHst).Value = item.Hst;
+                            row.Cell(colXuat).Value = item.SlXuat;
+                            row.Cell(colHong).Value = item.SlHong;
+
+                            targetRow++;
+                        }
+
+                        workbook.Save();
+                    }
+
+                    // Update status in DuckDB staging to 'Synced'
+                    using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                    {
+                        conn.Open();
+                        foreach (var item in itemsToCommit)
+                        {
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                cmd.CommandText = "UPDATE staging_items SET status = 'Synced' WHERE id = $id;";
+                                cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                    }
+                });
+
+                MessageBox.Show($"Đã ghi sổ thành công {itemsToCommit.Count} dòng vào Excel!", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+                
+                // Reload preview grid (synced items are removed)
+                LoadStagingItemsFromDb();
+
+                // Re-open and re-load workbook in application memory
+                var workbookCopy = await Task.Run(() => new XLWorkbook(activeConfig.LocalPath));
+                _refWorkbook = workbookCopy;
+
+                // Reload sheets on Tham chiếu tab to show the newly committed data!
+                await LoadBothSheetsAsync(activeConfig.RefSheet, activeConfig.SalesSheet);
+
+                // Switch to Tab Tham chiếu (Index 3 in MainTabControl)
+                MainTabControl.SelectedIndex = 3;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi khi ghi sổ Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                Logger.Log($"[Excel Ghi sổ Lỗi] CommitToExcelBtn_Click: {ex.Message}");
+            }
+            finally
+            {
+                HideRefLoading();
+            }
+        }
     }
-}
+
+    public static class FuzzyMatcher
+    {
+        public static string RemoveSign4VietnameseString(string str)
+        {
+            if (string.IsNullOrEmpty(str)) return str;
+
+            string formD = str.Normalize(NormalizationForm.FormD);
+            StringBuilder sb = new StringBuilder();
+
+            foreach (char ch in formD)
+            {
+                System.Globalization.UnicodeCategory uc = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
+                if (uc != System.Globalization.UnicodeCategory.NonSpacingMark)
+                {
+                    if (ch == 'đ') sb.Append('d');
+                    else if (ch == 'Đ') sb.Append('D');
+                    else sb.Append(ch);
+                }
+            }
+
+            string result = sb.ToString().Normalize(NormalizationForm.FormC);
+            result = result.Replace("đ", "d").Replace("Đ", "D");
+            return result;
+        }
+
+        public static double GetTokenMatchScore(string source, string target)
+        {
+            if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(target)) return 0.0;
+
+            var sourceTokens = source.Split(new[] { ' ', '-', '/', '+', '.', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var targetTokens = target.Split(new[] { ' ', '-', '/', '+', '.', ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (sourceTokens.Length == 0 || targetTokens.Length == 0) return 0.0;
+
+            int intersectCount = 0;
+            foreach (var sTok in sourceTokens)
+            {
+                if (targetTokens.Any(tTok => tTok == sTok || tTok.Contains(sTok) || sTok.Contains(tTok)))
+                {
+                    intersectCount++;
+                }
+            }
+
+            return (double)intersectCount / Math.Max(sourceTokens.Length, targetTokens.Length);
+        }
+
+        public static double JaroWinklerDistance(string s1, string s2)
+        {
+            if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2)) return 0.0;
+            if (s1 == s2) return 1.0;
+
+            int l1 = s1.Length;
+            int l2 = s2.Length;
+
+            int matchDistance = Math.Max(l1, l2) / 2 - 1;
+
+            bool[] s1Matches = new bool[l1];
+            bool[] s2Matches = new bool[l2];
+
+            int matches = 0;
+            int transpositions = 0;
+
+            for (int i = 0; i < l1; i++)
+            {
+                int start = Math.Max(0, i - matchDistance);
+                int end = Math.Min(i + matchDistance + 1, l2);
+
+                for (int j = start; j < end; j++)
+                {
+                    if (s2Matches[j]) continue;
+                    if (s1[i] != s2[j]) continue;
+
+                    s1Matches[i] = true;
+                    s2Matches[j] = true;
+                    matches++;
+                    break;
+                }
+            }
+
+            if (matches == 0) return 0.0;
+
+            int k = 0;
+            for (int i = 0; i < l1; i++)
+            {
+                if (!s1Matches[i]) continue;
+                while (!s2Matches[k]) k++;
+                if (s1[i] != s2[k]) transpositions++;
+                k++;
+            }
+
+            double jaro = ((double)matches / l1 + (double)matches / l2 + (double)(matches - transpositions / 2.0) / matches) / 3.0;
+
+            double p = 0.1;
+            int prefixLength = 0;
+            for (int i = 0; i < Math.Min(4, Math.Min(l1, l2)); i++)
+            {
+                if (s1[i] == s2[i]) prefixLength++;
+                else break;
+            }
+
+            return jaro + prefixLength * p * (1.0 - jaro);
+        }
+
+        public static ReferenceItem? FindBestMatch(string rawName, IEnumerable<ReferenceItem> refItems, out double bestScore)
+        {
+            bestScore = 0.0;
+            ReferenceItem? bestMatch = null;
+
+            string cleanRaw = RemoveSign4VietnameseString(rawName.Trim().ToLower());
+
+            foreach (var refItem in refItems)
+            {
+                string cleanRef = RemoveSign4VietnameseString(refItem.TenHang.Trim().ToLower());
+                string cleanAbbrev = RemoveSign4VietnameseString(refItem.VietTat.Trim().ToLower());
+
+                if (!string.IsNullOrEmpty(cleanAbbrev) && cleanRaw == cleanAbbrev)
+                {
+                    bestScore = 1.0;
+                    return refItem;
+                }
+
+                double tokenScore = GetTokenMatchScore(cleanRaw, cleanRef);
+                double jwScore = JaroWinklerDistance(cleanRaw, cleanRef);
+
+                double score = (0.6 * tokenScore) + (0.4 * jwScore);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestMatch = refItem;
+                }
+            }
+
+            return bestMatch;
+        }
+
+        public static string FormatDiemGiao(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            return value.Trim().ToLower();
+        }
+
+        public static string FormatKhachHang(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            string trimmed = value.Trim();
+            if (trimmed.Length == 0) return "";
+            if (trimmed.Length == 1) return trimmed.ToUpper();
+            return char.ToUpper(trimmed[0]) + trimmed.Substring(1).ToLower();
+        }
+    }
+}

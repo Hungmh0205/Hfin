@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "tDn90lj6Xs8=",
+  "dgSpecHash": "aspf6hQSF4k=",
   "success": true,
   "projectFilePath": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
   "expectedPackageFiles": [
@@ -8,6 +8,8 @@
     "C:\\Users\\Dell\\.nuget\\packages\\closedxml.parser\\2.0.0\\closedxml.parser.2.0.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\documentformat.openxml\\3.1.1\\documentformat.openxml.3.1.1.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\documentformat.openxml.framework\\3.1.1\\documentformat.openxml.framework.3.1.1.nupkg.sha512",
+    "C:\\Users\\Dell\\.nuget\\packages\\duckdb.net.bindings.full\\1.1.2\\duckdb.net.bindings.full.1.1.2.nupkg.sha512",
+    "C:\\Users\\Dell\\.nuget\\packages\\duckdb.net.data.full\\1.1.2\\duckdb.net.data.full.1.1.2.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\excelnumberformat\\1.1.0\\excelnumberformat.1.1.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\rbush.signed\\4.0.0\\rbush.signed.4.0.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\sixlabors.fonts\\1.0.0\\sixlabors.fonts.1.0.0.nupkg.sha512",

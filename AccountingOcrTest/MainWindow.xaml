@@ -116,6 +116,7 @@
                             <ProgressBar x:Name="ProgressBar" Width="150" Height="18" Margin="0,0,10,0" Visibility="Collapsed" Foreground="#10b981"/>
                             <Button x:Name="CancelBtn" Content="⏹ Hủy" Padding="10,5" Background="#ef4444" Foreground="White" FontWeight="Bold" Click="CancelBtn_Click" Visibility="Collapsed" Margin="0,0,10,0"/>
                             <Button x:Name="StartBtn" Content="▶ Bắt đầu xử lý" Padding="15,5" Background="#10b981" Foreground="White" FontWeight="Bold" Click="StartBtn_Click"/>
+                            <Button x:Name="ContinueBtn" Content="Tiếp tục ➔" Padding="15,5" Background="#16a34a" Foreground="White" FontWeight="Bold" Click="ContinueBtn_Click" Visibility="Collapsed" Margin="10,0,0,0"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -215,6 +216,83 @@
                         </Grid>
                     </Grid>
                 </Grid>
+            </Grid>
+        </TabItem>
+
+        <!-- Tab: Xem trước & Đối soát -->
+        <TabItem x:Name="PreviewTab" Header="Xem trước &amp; Đối soát" FontSize="14" FontWeight="SemiBold">
+            <Grid Background="#f3f4f6" Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Action Bar -->
+                <Border Background="White" CornerRadius="5" Padding="10" Margin="0,0,0,10" BorderBrush="#e5e7eb" BorderThickness="1">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <Button x:Name="ReloadPreviewBtn" Content="🔄 Tải lại dữ liệu" Padding="15,6" Background="#f3f4f6" Foreground="#374151" BorderBrush="#d1d5db" BorderThickness="1" Cursor="Hand" Click="ReloadPreviewBtn_Click" FontWeight="SemiBold"/>
+                        
+                        <Button x:Name="DeletePreviewSelectedBtn" Content="🗑️ Xóa dòng chọn" Grid.Column="1" Margin="10,0,0,0" Padding="15,6" Background="#ef4444" Foreground="White" BorderThickness="0" Cursor="Hand" Click="DeletePreviewSelected_Click" FontWeight="Bold"/>
+
+                        <StackPanel Grid.Column="3" Orientation="Horizontal">
+                            <Button x:Name="CommitToExcelBtn" Content="💾 Xác nhận &amp; Ghi sổ Excel" Padding="20,6" Background="#16a34a" Foreground="White" BorderThickness="0" Cursor="Hand" Click="CommitToExcelBtn_Click" FontWeight="Bold"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Data Preview DataGrid -->
+                <Border Grid.Row="1" Background="White" CornerRadius="5" Padding="10" BorderBrush="#e5e7eb" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Danh sách chi tiết mặt hàng đang chờ ghi sổ (Staging)" FontWeight="Bold" FontSize="16" Foreground="#1e293b" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="SelectAllPreviewChk" Content="Chọn tất cả" Grid.Column="1" FontWeight="Bold" VerticalAlignment="Center" Click="SelectAllPreviewChk_Click" IsChecked="True"/>
+                        </Grid>
+
+                        <DataGrid x:Name="PreviewDataGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" AlternatingRowBackground="#f9fafb" RowHeight="35" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" CellEditEnding="PreviewDataGrid_CellEditEnding">
+                            <DataGrid.Columns>
+                                <DataGridCheckBoxColumn Header="Chọn" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="50"/>
+                                <DataGridTextColumn Header="Ngày giao" Binding="{Binding NgayGiao, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="110"/>
+                                <DataGridTextColumn Header="Khách hàng" Binding="{Binding KhachHang, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="130"/>
+                                <DataGridTextColumn Header="Điểm giao" Binding="{Binding DiemGiao, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="180"/>
+                                <DataGridTextColumn Header="Người giao" Binding="{Binding NguoiGiao, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="120"/>
+                                <DataGridTextColumn Header="Tên gốc (Hóa đơn)" Binding="{Binding TenHangGoc}" IsReadOnly="True" Width="200"/>
+                                <DataGridTextColumn Header="Tên khớp chuẩn (Tham chiếu)" Binding="{Binding TenHangKhop, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="200"/>
+                                <DataGridTextColumn Header="Mã hst" Binding="{Binding Hst, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="100"/>
+                                <DataGridTextColumn Header="ĐVT" Binding="{Binding DonVi}" IsReadOnly="True" Width="80"/>
+                                <DataGridTextColumn Header="SL Xuất" Binding="{Binding SlXuat, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="80"/>
+                                <DataGridTextColumn Header="SL Nhận" Binding="{Binding SlNhan, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="80"/>
+                                <DataGridTextColumn Header="SL Hỏng" Binding="{Binding SlHong}" IsReadOnly="True" Width="80">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="Red"/>
+                                            <Setter Property="FontWeight" Value="Bold"/>
+                                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Ghi chú" Binding="{Binding GhiChu, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="*"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Border>
             </Grid>
         </TabItem>
 

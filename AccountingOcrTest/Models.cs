@@ -226,4 +226,69 @@ namespace AccountingOcrTest
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
     }
+
+    public class StagingItem : INotifyPropertyChanged
+    {
+        private string _id = "";
+        private string _fileName = "";
+        private string _ngayGiao = "";
+        private string _khachHang = "";
+        private string _diemGiao = "";
+        private string _nguoiGiao = "";
+        private string _tenHangGoc = "";
+        private string _tenHangKhop = "";
+        private string _hst = "";
+        private string _donVi = "";
+        private double _slXuat;
+        private double _slNhan;
+        private double _slHong;
+        private string _ghiChu = "";
+        private bool _isSelected = true;
+
+        public string Id { get => _id; set { _id = value; OnPropertyChanged(); } }
+        public string FileName { get => _fileName; set { _fileName = value; OnPropertyChanged(); } }
+        public string NgayGiao { get => _ngayGiao; set { _ngayGiao = value; OnPropertyChanged(); } }
+        public string KhachHang { get => _khachHang; set { _khachHang = FuzzyMatcher.FormatKhachHang(value); OnPropertyChanged(); } }
+        public string DiemGiao { get => _diemGiao; set { _diemGiao = FuzzyMatcher.FormatDiemGiao(value); OnPropertyChanged(); } }
+        public string NguoiGiao { get => _nguoiGiao; set { _nguoiGiao = value; OnPropertyChanged(); } }
+        public string TenHangGoc { get => _tenHangGoc; set { _tenHangGoc = value; OnPropertyChanged(); } }
+        public string TenHangKhop { get => _tenHangKhop; set { _tenHangKhop = value; OnPropertyChanged(); } }
+        public string Hst { get => _hst; set { _hst = value; OnPropertyChanged(); } }
+        public string DonVi { get => _donVi; set { _donVi = value; OnPropertyChanged(); } }
+        public double SlXuat 
+        { 
+            get => _slXuat; 
+            set 
+            { 
+                _slXuat = value; 
+                OnPropertyChanged(); 
+                RecalculateHong(); 
+            } 
+        }
+        public double SlNhan 
+        { 
+            get => _slNhan; 
+            set 
+            { 
+                _slNhan = value; 
+                OnPropertyChanged(); 
+                RecalculateHong(); 
+            } 
+        }
+        public double SlHong { get => _slHong; set { _slHong = value; OnPropertyChanged(); } }
+        public string GhiChu { get => _ghiChu; set { _ghiChu = value; OnPropertyChanged(); } }
+        public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(); } }
+
+        private void RecalculateHong()
+        {
+            SlHong = SlXuat - SlNhan;
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string? name = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
 }
+

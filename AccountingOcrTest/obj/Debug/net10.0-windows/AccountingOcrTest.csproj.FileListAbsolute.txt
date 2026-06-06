@@ -36,3 +36,10 @@ D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\RBush.dll
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\SixLabors.Fonts.dll
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\SheetSelectorWindow.baml
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\SheetSelectorWindow.g.cs
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\DuckDB.NET.Bindings.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\DuckDB.NET.Data.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\linux-arm64\native\libduckdb.so
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\linux-x64\native\libduckdb.so
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\osx\native\libduckdb.dylib
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\win-arm64\native\duckdb.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\win-x64\native\duckdb.dll

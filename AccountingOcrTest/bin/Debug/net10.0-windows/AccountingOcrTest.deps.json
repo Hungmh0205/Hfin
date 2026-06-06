@@ -9,6 +9,7 @@
       "AccountingOcrTest/1.0.0": {
         "dependencies": {
           "ClosedXML": "0.105.0",
+          "DuckDB.NET.Data.Full": "1.1.2",
           "Tesseract": "5.2.0"
         },
         "runtime": {
@@ -54,6 +55,52 @@
           "lib/net8.0/DocumentFormat.OpenXml.Framework.dll": {
             "assemblyVersion": "3.1.1.0",
             "fileVersion": "3.1.1.0"
+          }
+        }
+      },
+      "DuckDB.NET.Bindings.Full/1.1.2": {
+        "runtime": {
+          "lib/net8.0/DuckDB.NET.Bindings.dll": {
+            "assemblyVersion": "1.1.2.0",
+            "fileVersion": "1.1.2.0"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/linux-arm64/native/libduckdb.so": {
+            "rid": "linux-arm64",
+            "assetType": "native",
+            "fileVersion": "0.0.0.0"
+          },
+          "runtimes/linux-x64/native/libduckdb.so": {
+            "rid": "linux-x64",
+            "assetType": "native",
+            "fileVersion": "0.0.0.0"
+          },
+          "runtimes/osx/native/libduckdb.dylib": {
+            "rid": "osx",
+            "assetType": "native",
+            "fileVersion": "0.0.0.0"
+          },
+          "runtimes/win-arm64/native/duckdb.dll": {
+            "rid": "win-arm64",
+            "assetType": "native",
+            "fileVersion": "1.1.1.0"
+          },
+          "runtimes/win-x64/native/duckdb.dll": {
+            "rid": "win-x64",
+            "assetType": "native",
+            "fileVersion": "1.1.1.0"
+          }
+        }
+      },
+      "DuckDB.NET.Data.Full/1.1.2": {
+        "dependencies": {
+          "DuckDB.NET.Bindings.Full": "1.1.2"
+        },
+        "runtime": {
+          "lib/net8.0/DuckDB.NET.Data.dll": {
+            "assemblyVersion": "1.1.2.0",
+            "fileVersion": "1.1.2.0"
           }
         }
       },
@@ -124,6 +171,20 @@
       "sha512": "sha512-6APEp/ElZV58S/4v8mf4Ke3ONEDORs64MqdD64Z7wWpcHANB9oovQsGIwtqjnKihulOj7T0a6IxHIHOfMqKOng==",
       "path": "documentformat.openxml.framework/3.1.1",
       "hashPath": "documentformat.openxml.framework.3.1.1.nupkg.sha512"
+    },
+    "DuckDB.NET.Bindings.Full/1.1.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-JDoMrKDGaU2CREuWPiobDXS134H352sVkXNB+U+QJ7WRkan1vb8oS2fJC7avfpu1HiBJFSjTjuwBE24B/dNkpA==",
+      "path": "duckdb.net.bindings.full/1.1.2",
+      "hashPath": "duckdb.net.bindings.full.1.1.2.nupkg.sha512"
+    },
+    "DuckDB.NET.Data.Full/1.1.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-/00BfadzHo32t9cXEDjDZznh7NslbuVvLgkzUIp3/uqDFs3ge4rfES3aRh3IBdRMO/kIxVkV9M3Esm3lFwWOuA==",
+      "path": "duckdb.net.data.full/1.1.2",
+      "hashPath": "duckdb.net.data.full.1.1.2.nupkg.sha512"
     },
     "ExcelNumberFormat/1.1.0": {
       "type": "package",

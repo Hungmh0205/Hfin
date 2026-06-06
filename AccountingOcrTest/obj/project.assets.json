@@ -64,6 +64,57 @@
           }
         }
       },
+      "DuckDB.NET.Bindings.Full/1.1.2": {
+        "type": "package",
+        "compile": {
+          "lib/net8.0/DuckDB.NET.Bindings.dll": {
+            "related": ".pdb"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/DuckDB.NET.Bindings.dll": {
+            "related": ".pdb"
+          }
+        },
+        "runtimeTargets": {
+          "runtimes/linux-arm64/native/libduckdb.so": {
+            "assetType": "native",
+            "rid": "linux-arm64"
+          },
+          "runtimes/linux-x64/native/libduckdb.so": {
+            "assetType": "native",
+            "rid": "linux-x64"
+          },
+          "runtimes/osx/native/libduckdb.dylib": {
+            "assetType": "native",
+            "rid": "osx"
+          },
+          "runtimes/win-arm64/native/duckdb.dll": {
+            "assetType": "native",
+            "rid": "win-arm64"
+          },
+          "runtimes/win-x64/native/duckdb.dll": {
+            "assetType": "native",
+            "rid": "win-x64"
+          }
+        }
+      },
+      "DuckDB.NET.Data.Full/1.1.2": {
+        "type": "package",
+        "dependencies": {
+          "DuckDB.NET.Bindings.Full": "1.1.2"
+        },
+        "compile": {
+          "lib/net8.0/DuckDB.NET.Data.dll": {
+            "related": ".pdb"
+          }
+        },
+        "runtime": {
+          "lib/net8.0/DuckDB.NET.Data.dll": {
+            "related": ".pdb"
+          }
+        }
+      },
       "ExcelNumberFormat/1.1.0": {
         "type": "package",
         "compile": {
@@ -220,6 +271,53 @@
         "lib/netstandard2.0/DocumentFormat.OpenXml.Framework.xml"
       ]
     },
+    "DuckDB.NET.Bindings.Full/1.1.2": {
+      "sha512": "JDoMrKDGaU2CREuWPiobDXS134H352sVkXNB+U+QJ7WRkan1vb8oS2fJC7avfpu1HiBJFSjTjuwBE24B/dNkpA==",
+      "type": "package",
+      "path": "duckdb.net.bindings.full/1.1.2",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE-DuckDB.txt",
+        "LICENSE.md",
+        "Logo.jpg",
+        "README.md",
+        "duckdb.net.bindings.full.1.1.2.nupkg.sha512",
+        "duckdb.net.bindings.full.nuspec",
+        "lib/net6.0/DuckDB.NET.Bindings.dll",
+        "lib/net6.0/DuckDB.NET.Bindings.pdb",
+        "lib/net8.0/DuckDB.NET.Bindings.dll",
+        "lib/net8.0/DuckDB.NET.Bindings.pdb",
+        "lib/netstandard2.0/DuckDB.NET.Bindings.dll",
+        "lib/netstandard2.0/DuckDB.NET.Bindings.pdb",
+        "runtimes/linux-arm64/native/libduckdb.so",
+        "runtimes/linux-x64/native/libduckdb.so",
+        "runtimes/osx/native/libduckdb.dylib",
+        "runtimes/win-arm64/native/duckdb.dll",
+        "runtimes/win-x64/native/duckdb.dll"
+      ]
+    },
+    "DuckDB.NET.Data.Full/1.1.2": {
+      "sha512": "/00BfadzHo32t9cXEDjDZznh7NslbuVvLgkzUIp3/uqDFs3ge4rfES3aRh3IBdRMO/kIxVkV9M3Esm3lFwWOuA==",
+      "type": "package",
+      "path": "duckdb.net.data.full/1.1.2",
+      "files": [
+        ".nupkg.metadata",
+        ".signature.p7s",
+        "LICENSE-DuckDB.txt",
+        "LICENSE.md",
+        "Logo.jpg",
+        "README.md",
+        "duckdb.net.data.full.1.1.2.nupkg.sha512",
+        "duckdb.net.data.full.nuspec",
+        "lib/net6.0/DuckDB.NET.Data.dll",
+        "lib/net6.0/DuckDB.NET.Data.pdb",
+        "lib/net8.0/DuckDB.NET.Data.dll",
+        "lib/net8.0/DuckDB.NET.Data.pdb",
+        "lib/netstandard2.0/DuckDB.NET.Data.dll",
+        "lib/netstandard2.0/DuckDB.NET.Data.pdb"
+      ]
+    },
     "ExcelNumberFormat/1.1.0": {
       "sha512": "R3BVHPs9O+RkExbZYTGT0+9HLbi8ZrNij1Yziyw6znd3J7P3uoIR07uwTLGOogtz1p6+0sna66eBoXu7tBiVQA==",
       "type": "package",
@@ -351,6 +449,7 @@
   "projectFileDependencyGroups": {
     "net10.0-windows": [
       "ClosedXML >= 0.105.0",
+      "DuckDB.NET.Data.Full >= 1.1.2",
       "System.Drawing.Common >= 10.0.8",
       "Tesseract >= 5.2.0"
     ]
@@ -410,6 +509,10 @@
           "ClosedXML": {
             "target": "Package",
             "version": "[0.105.0, )"
+          },
+          "DuckDB.NET.Data.Full": {
+            "target": "Package",
+            "version": "[1.1.2, )"
           },
           "System.Drawing.Common": {
             "target": "Package",

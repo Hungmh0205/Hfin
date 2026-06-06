@@ -6637,3 +6637,427 @@
 }
 -----------------------
 2026-06-06 08:11:01 - [Thành công] Đã trích xuất xong: C:\Users\Dell\Desktop\20260419_084855.jpg -> [Hùng] - 01/03/2026 - EASYMART - EASYMART 47 NGUYỄN TUÂN
+2026-06-06 12:21:25 - [DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.
+2026-06-06 12:23:19 - [Bắt đầu] Đang xử lý 4 hóa đơn bằng gemini-3.5-flash với 4 luồng...
+2026-06-06 12:23:19 - [Tiến trình] Bắt đầu xử lý file: C:\Users\Dell\Desktop\20260419_084837.jpg
+2026-06-06 12:23:19 - [Tiến trình] Bắt đầu xử lý file: C:\Users\Dell\Desktop\20260419_084725.jpg
+2026-06-06 12:23:19 - [Tiến trình] Bắt đầu xử lý file: C:\Users\Dell\Desktop\20260419_084736.jpg
+2026-06-06 12:23:19 - [Tiến trình] Bắt đầu xử lý file: C:\Users\Dell\Desktop\20260419_084855.jpg
+2026-06-06 12:23:19 - [ApiKeyManager] Cấp phát Key AQ.Ab... (Lần dùng thứ 1/phút)
+2026-06-06 12:23:19 - [ApiKeyManager] Cấp phát Key AQ.Ab... (Lần dùng thứ 1/phút)
+2026-06-06 12:23:19 - [ApiKeyManager] Cấp phát Key AQ.Ab... (Lần dùng thứ 1/phút)
+2026-06-06 12:23:19 - [ApiKeyManager] Cấp phát Key AQ.Ab... (Lần dùng thứ 1/phút)
+2026-06-06 12:23:55 - [Gemini API Result]
+{
+  "quy_trinh_suy_luan": "Hình ảnh được định hướng lại 180 độ để đọc chính xác. Ngày giao hàng được xác định từ ngày viết tay 24/03/2026 trên dấu nhận hàng. Điểm giao hàng là 3020 - CHI NHÁNH HƯNG YÊN, thuộc khách hàng AEON. Phân tích chi tiết 7 dòng hàng hóa từ trên xuống dưới cho thấy không có bất kỳ nét gạch bỏ hoặc chỉnh sửa viết tay nào, do đó tất cả các dòng đều được giao nhận đầy đủ với số lượng nhận bằng số lượng xuất.",
+  "ngay_giao": "24/03/2026",
+  "khach_hang": "AEON",
+  "diem_giao": "3020 - CHI NHÁNH HƯNG YÊN",
+  "danh_sach_hang_hoa": [
+    {
+      "ten_hang": "MĂM CẢI CỦ TRẮNG 150G VNS",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "MĂM CẢI CỦ ĐỎ 150G VNS",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "ĐẬU ĐỎ TƯƠI 100G",
+      "sl_xuat": 4,
+      "sl_nhan": 4,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "HẠT ĐẬU HÀ LAN TƯƠI 100G",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "RAU BABY CẢI BÓ XÔI 200G",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "RAU BABY CẢI MƠ 200G",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "RAU BABY CẢI NGỌT 200G",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    }
+  ]
+}
+-----------------------
+2026-06-06 12:23:55 - [Thành công] Đã trích xuất xong: C:\Users\Dell\Desktop\20260419_084837.jpg -> [Hùng] - 24/03/2026 - AEON - 3020 - CHI NHÁNH HƯNG YÊN
+2026-06-06 12:23:56 - [Gemini API Result]
+{
+  "quy_trinh_suy_luan": "Hệ thống tiến hành xoay ảnh đúng chiều và trích xuất các thông tin hành chính của đơn hàng bao gồm khách hàng WinMart và điểm giao Royal City. Sau đó, tiến hành phân tích chi tiết từng dòng hàng hóa bằng cách đối chiếu số lượng in máy với các ký hiệu viết tay (dấu tick kèm số hoặc nét gạch chéo hủy dòng) để xác định chính xác số lượng thực nhận và số lượng hỏng.",
+  "ngay_giao": "17/04/2026",
+  "khach_hang": "WinMart",
+  "diem_giao": "1532 - WM VMM HNI Royal City",
+  "danh_sach_hang_hoa": [
+    {
+      "ten_hang": "Hạt Đậu nành nhật 200g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu trắng tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu đỏ tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu mắt ngọc tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu cúc tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu ngự tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu Hà lan tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Mầm Cải củ trắng 150gr",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Mầm Cải củ đỏ 150gr",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Mầm Cải ngọt 120gr",
+      "sl_xuat": 5,
+      "sl_nhan": 0,
+      "sl_hong": 5
+    },
+    {
+      "ten_hang": "Cải Thìa xanh baby leaf 200g",
+      "sl_xuat": 10,
+      "sl_nhan": 0,
+      "sl_hong": 10
+    },
+    {
+      "ten_hang": "Hỗn hợp rau cải baby leaf 200g",
+      "sl_xuat": 10,
+      "sl_nhan": 0,
+      "sl_hong": 10
+    },
+    {
+      "ten_hang": "Mồng tơi baby leaf 200g",
+      "sl_xuat": 10,
+      "sl_nhan": 10,
+      "sl_hong": 0
+    }
+  ]
+}
+-----------------------
+2026-06-06 12:23:56 - [Thành công] Đã trích xuất xong: C:\Users\Dell\Desktop\20260419_084725.jpg -> [Hùng] - 17/04/2026 - WinMart - 1532 - WM VMM HNI Royal City
+2026-06-06 12:24:01 - [Gemini API Result]
+{
+  "quy_trinh_suy_luan": "Hệ thống phân tích hình ảnh và xác định thông tin chung: ngày giao hàng thực tế là ngày viết tay 17/04/2026, khách hàng WinMart và điểm giao là 1708 - WM HNI Lê Văn Thiêm. Tiến hành đối soát từng dòng sản phẩm: các dòng 10, 20, 30, 40, 80 và 90 bị đường kẻ dọc gạch hủy không có số lượng viết tay nên số lượng nhận bằng 0; các dòng 50, 60, 70 và từ 100 đến 130 có chữ số viết tay xác nhận nhận hàng thực tế nên số lượng nhận bằng số viết tay tương ứng.",
+  "ngay_giao": "17/04/2026",
+  "khach_hang": "WinMart",
+  "diem_giao": "1708 - WM HNI Lê Văn Thiêm",
+  "danh_sach_hang_hoa": [
+    {
+      "ten_hang": "10283592 Hỗn hợp cải mơ baby leaf 200g",
+      "sl_xuat": 2,
+      "sl_nhan": 0,
+      "sl_hong": 2
+    },
+    {
+      "ten_hang": "10283593 Cải Cầu Vồng baby leaf 200g",
+      "sl_xuat": 2,
+      "sl_nhan": 0,
+      "sl_hong": 2
+    },
+    {
+      "ten_hang": "10283600 Hỗn hợp Xà Lách baby leaf 200g",
+      "sl_xuat": 2,
+      "sl_nhan": 0,
+      "sl_hong": 2
+    },
+    {
+      "ten_hang": "10283601 Xà lách Xanh baby leaf 200g",
+      "sl_xuat": 2,
+      "sl_nhan": 0,
+      "sl_hong": 2
+    },
+    {
+      "ten_hang": "10283696 Hạt Sen tươi 100gr",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10283697 Hạt Sen tươi 200gr",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10053887 Mâm Cải củ trắng 150gr",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10053888 Mâm Cải củ đỏ 150gr",
+      "sl_xuat": 3,
+      "sl_nhan": 0,
+      "sl_hong": 3
+    },
+    {
+      "ten_hang": "10053889 Mâm Cải ngọt 120gr",
+      "sl_xuat": 3,
+      "sl_nhan": 0,
+      "sl_hong": 3
+    },
+    {
+      "ten_hang": "10283603 Quả đậu nành nhật 400g",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10283604 Hạt Đậu trắng tươi 100g",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10283605 Hạt Đậu đỏ tươi 100g",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "10283606 Hạt Đậu mắt ngọc tươi 100g",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    }
+  ]
+}
+-----------------------
+2026-06-06 12:24:01 - [Thành công] Đã trích xuất xong: C:\Users\Dell\Desktop\20260419_084736.jpg -> [Hùng] - 17/04/2026 - WinMart - 1708 - WM HNI Lê Văn Thiêm
+2026-06-06 12:24:17 - [Gemini API Result]
+{
+  "quy_trinh_suy_luan": "Phân tích trạng thái từng dòng dựa trên sự xuất hiện của dấu tick kiểm nhận trực quan kết hợp đối chiếu tổng tiền thanh toán thực tế là 686.500đ. Các dòng có dấu tick hợp lệ bao gồm dòng STT 2, 6, 7, 12, 13, 16, 17, 19, và 20 được xác nhận nhận đủ hàng. Tất cả các dòng còn lại không có dấu tick hoặc bị nét gạch hủy qua đều có số lượng nhận thực tế bằng 0.",
+  "ngay_giao": "01/03/2026",
+  "khach_hang": "EASYMART",
+  "diem_giao": "EASYMART 47 NGUYỄN TUÂN",
+  "danh_sach_hang_hoa": [
+    {
+      "ten_hang": "Mầm cải củ trắng",
+      "sl_xuat": 3,
+      "sl_nhan": 0,
+      "sl_hong": 3
+    },
+    {
+      "ten_hang": "Mầm cải củ đỏ",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Mầm cải ngọt",
+      "sl_xuat": 2,
+      "sl_nhan": 0,
+      "sl_hong": 2
+    },
+    {
+      "ten_hang": "Mầm rau muống",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Mầm hỗn hợp",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Giá đỗ xanh 300g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Giá đỗ tương 250gr",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hành thơm 300g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Tỏi tía 300g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu đỏ tươi 100g",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu trắng tươi 100g",
+      "sl_xuat": 2,
+      "sl_nhan": 2,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu mắt ngọc tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu cúc tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu ngự tươi 100g",
+      "sl_xuat": 3,
+      "sl_nhan": 3,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hạt Đậu Hà lan tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hỗn hợp hạt đậu tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Quả đậu Hà Lan tươi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hat sen tuoi 100g",
+      "sl_xuat": 5,
+      "sl_nhan": 5,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Hat sen tuoi 200g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Tỏi cô đơn Lý sơn 200g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Tỏi nhiều nhánh Lý Sơn 200g",
+      "sl_xuat": 5,
+      "sl_nhan": 0,
+      "sl_hong": 5
+    },
+    {
+      "ten_hang": "Hành tím Lý Sơn 200g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Củ Gừng tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Củ nghệ tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Củ Riềng tươi 100g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    },
+    {
+      "ten_hang": "Quả tiêu xanh 100g",
+      "sl_xuat": 3,
+      "sl_nhan": 0,
+      "sl_hong": 3
+    },
+    {
+      "ten_hang": "Ớt xiêm xanh 50g",
+      "sl_xuat": 5,
+      "sl_nhan": 0,
+      "sl_hong": 5
+    },
+    {
+      "ten_hang": "Rau má 200g",
+      "sl_xuat": 0,
+      "sl_nhan": 0,
+      "sl_hong": 0
+    }
+  ]
+}
+-----------------------
+2026-06-06 12:24:17 - [Thành công] Đã trích xuất xong: C:\Users\Dell\Desktop\20260419_084855.jpg -> [Hùng] - 01/03/2026 - EASYMART - EASYMART 47 NGUYỄN TUÂN
+2026-06-06 13:02:54 - [Excel Ghi sổ Lỗi] CommitToExcelBtn_Click: Invalid Input Error: Values were not provided for the following prepared statement parameters: 1
+2026-06-06 13:27:49 - [DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.
+2026-06-06 13:41:25 - [DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.
+2026-06-06 14:33:39 - [DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.
