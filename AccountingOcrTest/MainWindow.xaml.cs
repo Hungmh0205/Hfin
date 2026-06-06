@@ -418,6 +418,65 @@ namespace AccountingOcrTest
             return resized;
         }
 
+        private static void RotateImageByExif(System.Drawing.Image img)
+        {
+            try
+            {
+                if (img.PropertyIdList.Contains(0x0112)) // ExifPropertyTagOrientation
+                {
+                    var prop = img.GetPropertyItem(0x0112);
+                    if (prop != null && prop.Value != null && prop.Value.Length > 0)
+                    {
+                        int orientation = prop.Value[0];
+                        RotateFlipType flip = RotateFlipType.RotateNoneFlipNone;
+
+                        switch (orientation)
+                        {
+                            case 1:
+                                flip = RotateFlipType.RotateNoneFlipNone;
+                                break;
+                            case 2:
+                                flip = RotateFlipType.RotateNoneFlipX;
+                                break;
+                            case 3:
+                                flip = RotateFlipType.Rotate180FlipNone;
+                                break;
+                            case 4:
+                                flip = RotateFlipType.Rotate180FlipX;
+                                break;
+                            case 5:
+                                flip = RotateFlipType.Rotate90FlipX;
+                                break;
+                            case 6:
+                                flip = RotateFlipType.Rotate90FlipNone;
+                                break;
+                            case 7:
+                                flip = RotateFlipType.Rotate270FlipX;
+                                break;
+                            case 8:
+                                flip = RotateFlipType.Rotate270FlipNone;
+                                break;
+                        }
+
+                        if (flip != RotateFlipType.RotateNoneFlipNone)
+                        {
+                            img.RotateFlip(flip);
+                            try
+                            {
+                                img.RemovePropertyItem(0x0112);
+                            }
+                            catch { }
+                            Logger.Log($"[EXIF] Đã tự động xoay ảnh theo thẻ EXIF: {flip}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[EXIF Lỗi] Không thể xoay ảnh theo EXIF: {ex.Message}");
+            }
+        }
+
         private async Task ProcessImageAsync(ProcessingItem item, string apiKey, string modelName, string shipperName, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
@@ -429,32 +488,55 @@ namespace AccountingOcrTest
 
             using (var img = new Bitmap(item.FilePath))
             {
-                // Fix #4: Use cached TesseractEngine instead of creating new one each time
+                // Step 1: Rotate by EXIF tag first (extremely common for phone photos)
+                RotateImageByExif(img);
+
+                // Step 2: Use cached TesseractEngine to detect any remaining physical rotation
                 try 
                 {
                     var engine = _tessEngine.Value;
                     if (engine != null)
                     {
-                        using (var pix = Pix.LoadFromFile(item.FilePath))
+                        using (var ms = new MemoryStream())
                         {
-                            using (var page = engine.Process(pix, PageSegMode.OsdOnly))
+                            img.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
+                            using (var pix = Pix.LoadFromMemory(ms.ToArray()))
                             {
-                                var iterator = page.GetIterator();
-                                if (iterator != null)
+                                using (var page = engine.Process(pix, PageSegMode.OsdOnly))
                                 {
-                                    iterator.Begin();
-                                    var props = iterator.GetProperties();
-                                    Tesseract.Orientation orientation = props.Orientation;
+                                    var iterator = page.GetIterator();
+                                    if (iterator != null)
+                                    {
+                                        iterator.Begin();
+                                        var props = iterator.GetProperties();
+                                        Tesseract.Orientation orientation = props.Orientation;
+                                        Logger.Log($"[Tesseract OSD] Hướng ảnh phát hiện: {orientation}");
 
-                                    if (orientation == Tesseract.Orientation.PageRight) img.RotateFlip(RotateFlipType.Rotate270FlipNone);
-                                    else if (orientation == Tesseract.Orientation.PageDown) img.RotateFlip(RotateFlipType.Rotate180FlipNone);
-                                    else if (orientation == Tesseract.Orientation.PageLeft) img.RotateFlip(RotateFlipType.Rotate90FlipNone);
+                                        if (orientation == Tesseract.Orientation.PageRight) 
+                                        {
+                                            img.RotateFlip(RotateFlipType.Rotate270FlipNone);
+                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 270 độ.");
+                                        }
+                                        else if (orientation == Tesseract.Orientation.PageDown) 
+                                        {
+                                            img.RotateFlip(RotateFlipType.Rotate180FlipNone);
+                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 180 độ (lộn ngược).");
+                                        }
+                                        else if (orientation == Tesseract.Orientation.PageLeft) 
+                                        {
+                                            img.RotateFlip(RotateFlipType.Rotate90FlipNone);
+                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 90 độ.");
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[Tesseract Lỗi] Không thể chạy OSD: {ex.Message}");
+                }
 
                 token.ThrowIfCancellationRequested();
 
@@ -502,7 +584,16 @@ HÃY THỰC HIỆN QUY TRÌNH SUY LUẬN (CHAIN OF THOUGHT):
 BẮT BUỘC ghi toàn bộ quá trình phân tích của bạn vào trường `quy_trinh_suy_luan` trong file JSON. Đối với phần hàng hóa, hãy phân tích TỪNG DÒNG một cách tường minh, ví dụ: 'Dòng X: bị một đường kẻ dọc/chéo dài cắt qua cột Đơn giá/ĐVT -> Hủy -> sl_nhan = 0', 'Dòng Y: có nét viết tay số 2 -> sl_nhan = 2'. NẾU CÓ MỘT ĐƯỜNG KẺ DÀI KÉO TỪ DÒNG TRÊN XUỐNG DÒNG DƯỚI, BẠN PHẢI GHI NHẬN LÀ TẤT CẢ CÁC DÒNG ĐÓ ĐỀU BỊ GẠCH BỎ.
 
 Bước 1: Phân tích Cấu trúc Bảng và Thông tin chung
-- Ngày giao (ngay_giao): TÌM NGÀY GIAO HÀNG (Delivery Date / Date Received). TUYỆT ĐỐI BỎ QUA 'Ngày In' (Printed Date) và 'Ngày Đặt Hàng' (Order Date). BẮT BUỘC TÌM KIẾM THEO ĐÚNG MỨC ĐỘ ƯU TIÊN: 1. Ngày ghi viết tay trên con dấu -> 2. NGÀY GHI VIẾT TAY bằng bút nằm rải rác (gần chữ ký, ghi chú...) -> 3. Ngày được in sẵn ở ô Ngày Giao Hàng. ĐẶC BIỆT CHÚ Ý TRƯỜNG HỢP SỬA NGÀY: Đôi khi ngày đóng dấu/in sẵn bị sai (ví dụ 24-03) và người ta dùng bút viết tay một ngày khác to hơn, khoanh tròn, gạch bỏ ngày cũ hoặc viết đè lên bên cạnh (ví dụ khoanh tròn số '09' đè lên số '24'). Nếu thấy có hiện tượng sửa ngày như vậy, bạn BẮT BUỘC phải ghép con số được sửa bằng tay đó vào làm ngày giao (ví dụ kết quả trả về phải là 09/03/2026 chứ không phải 24/03/2026 hay Ngày In).
+- Ngày giao (ngay_giao): Tìm ngày giao/nhận hàng thực tế (Delivery Date / Date Received). TUYỆT ĐỐI BỎ QUA 'Ngày In' (Printed Date / Ngày In / Printed Time, ví dụ: 2026-03-24) và 'Ngày Đặt Hàng' (Order Date).
+  BẮT BUỘC TÌM KIẾM THEO ĐÚNG MỨC ĐỘ ƯU TIÊN SAU:
+  1. ƯU TIÊN CAO NHẤT: Ngày ghi viết tay trên con dấu (ví dụ: ngày ghi trên con dấu nhận hàng).
+  2. ƯU TIÊN 2: Ngày ghi viết tay bằng bút nằm rải rác (gần chữ ký, khu vực ghi chú...).
+  3. ƯU TIÊN 3: Ngày được in sẵn ở ô/cột Ngày Giao Hàng hoặc Ngày Nhận Hàng (Delivery Date / Date Received). Ví dụ cột 'DATE RECEIVED' ghi '2026 03 09'.
+  
+  CẢNH BÁO VỀ SỬA NGÀY (CHO ƯU TIÊN 1 & 2): Đôi khi con dấu đóng ngày (Ưu tiên 1) hoặc ngày viết tay (Ưu tiên 2) bị ghi nhầm theo Ngày In (ví dụ: đóng dấu nhầm ngày '24-03-2026'). Nhân viên nhận hàng phát hiện ra đã dùng bút mực viết tay ghi đè/sửa trực tiếp lên trên con dấu hoặc bên cạnh (ví dụ: khoanh tròn số '24' rồi kéo nét chéo ghi đè số '09' lên trên đầu con dấu, hoặc gạch bỏ số '24' đóng dấu nhầm rồi viết đè số '09').
+  Khi thấy có bất kỳ ký hiệu sửa đổi viết tay nào đè lên con dấu hoặc đè lên ngày cũ, bạn BẮT BUỘC phải lấy giá trị đã được sửa bằng tay đó làm ngày nhận thực tế (Ví dụ ở đây số '24' đóng dấu nhầm đã bị gạch/sửa bằng bút viết tay thành '09', kết hợp với ngày nhận hàng in sẵn máy là '03 09' ở Ưu tiên 3 -> Kết luận ngày giao thực tế phải là '09/03/2026').
+  
+  Trả về định dạng ngày giao chuẩn 'dd/MM/yyyy'. Ví dụ: '09/03/2026'.
 - Khách hàng (khach_hang): Tìm tên thương hiệu/tên thương mại chính của khách hàng (ví dụ: Aeon, Winmart, Bigc, B11, Biggreen...). BẮT BUỘC bỏ qua toàn bộ phần tiền tố/hậu tố pháp lý rườm rà như 'CÔNG TY TNHH', 'CÔNG TY CỔ PHẦN', 'CHI NHÁNH', 'MỘT THÀNH VIÊN', 'VIỆT NAM'... Ví dụ: nếu hóa đơn ghi 'CÔNG TY TNHH AEON VIỆT NAM' thì chỉ trích xuất 'Aeon'. Nếu ghi 'CÔNG TY CP THƯƠNG MẠI WINCOMMERCE' thì chỉ trích xuất 'Winmart'.
 - Điểm giao (diem_giao): Tên chi nhánh của khách hàng. ĐẶC BIỆT CHÚ Ý: Nếu trên hóa đơn có ghi MÃ CỬA HÀNG đi kèm TÊN CỬA HÀNG (ví dụ như dòng '1708 - WM HNI Lê Văn Thiêm'), bạn PHẢI trích xuất NGUYÊN VẸN toàn bộ chuỗi đó làm điểm giao (tức là lấy đầy đủ cả mã và tên: '1708 - WM HNI Lê Văn Thiêm'). Nếu không có mã cửa hàng, thì lấy tên chi nhánh ngắn gọn như bình thường (ví dụ: 'Xuân Thủy', 'Ciputra'). Thường thông tin này nằm ở phần vị trí/địa chỉ điểm giao.
 
@@ -1645,6 +1736,43 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             finally
             {
                 HideRefLoading();
+            }
+        }
+
+        private void ExportExcelBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
+            if (activeConfig == null)
+            {
+                MessageBox.Show("Vui lòng chọn hoặc nạp một file cấu hình Excel hoạt động ở Trang chủ trước.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!File.Exists(activeConfig.LocalPath))
+            {
+                MessageBox.Show($"Không tìm thấy tệp Excel cục bộ tại: {activeConfig.LocalPath}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            SaveFileDialog saveFileDialog = new SaveFileDialog
+            {
+                Filter = "Excel Files|*.xlsx;*.xlsm",
+                Title = "Xuất tệp Excel bán hàng",
+                FileName = Path.GetFileNameWithoutExtension(activeConfig.FileName) + "_Exported" + Path.GetExtension(activeConfig.FileName)
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                try
+                {
+                    // Copy local copy to chosen location
+                    File.Copy(activeConfig.LocalPath, saveFileDialog.FileName, true);
+                    MessageBox.Show($"Đã xuất tệp Excel thành công tại:\n{saveFileDialog.FileName}", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Lỗi khi xuất tệp Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
 

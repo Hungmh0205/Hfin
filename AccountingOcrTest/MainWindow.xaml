@@ -327,6 +327,8 @@
                             <TextBlock x:Name="SelectedSalesSheetText" Text="Chưa chọn" FontWeight="Bold" Foreground="#1e293b"/>
                         </StackPanel>
                         
+                        <Button x:Name="ExportExcelBtn" Grid.Column="3" Content="📤 Xuất File Excel" Margin="15,0,0,0" Padding="15,6" Background="#16a34a" Foreground="White" BorderThickness="0" Cursor="Hand" Click="ExportExcelBtn_Click" FontWeight="Bold"/>
+                        
                         <TextBlock x:Name="RefFilePathText" Grid.Column="4" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray" FontStyle="Italic" Text="Chưa chọn file Excel tham chiếu." TextTrimming="CharacterEllipsis" HorizontalAlignment="Right"/>
                     </Grid>
                 </Border>
