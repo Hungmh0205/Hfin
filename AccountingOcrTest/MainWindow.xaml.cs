@@ -48,7 +48,16 @@ namespace AccountingOcrTest
         private static readonly object DbWriteLock = new object();
 
         // Fix #3: Static HttpClient — avoids socket exhaustion and DNS caching issues
-        private static readonly HttpClient _httpClient = new HttpClient();
+        private static readonly HttpClient _httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(60)
+        };
+
+        // Cached JsonSerializerOptions — avoids rebuilding internal cache every API call
+        private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
 
         // Fix #4: ThreadLocal TesseractEngine cache — each thread gets its own instance
         // (TesseractEngine is NOT thread-safe, so ThreadLocal is the correct approach)
@@ -63,6 +72,7 @@ namespace AccountingOcrTest
         public MainWindow()
         {
             InitializeComponent();
+            this.Closing += MainWindow_Closing;
             _apiKeyManager = new ApiKeyManager();
             ItemsListBox.ItemsSource = _items;
             _itemsView = CollectionViewSource.GetDefaultView(_items);
@@ -218,6 +228,7 @@ namespace AccountingOcrTest
             CancelBtn.Visibility = Visibility.Visible;
             CancelBtn.IsEnabled = true;
             CancelBtn.Content = "⏹ Hủy";
+            _cts?.Dispose();
             _cts = new CancellationTokenSource();
 
             string selectedModel = "gemini-3.5-flash";
@@ -261,18 +272,51 @@ namespace AccountingOcrTest
                         
                         try
                         {
-                            string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
-                            try
+                            int maxRetries = 3;
+                            int retryCount = 0;
+                            bool success = false;
+                            string lastErrorMessage = "";
+
+                            while (retryCount < maxRetries && !success && !_cts.Token.IsCancellationRequested)
                             {
-                                await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
+                                string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
+                                try
+                                {
+                                    await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
+                                    success = true;
+                                }
+                                catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
+                                {
+                                    retryCount++;
+                                    lastErrorMessage = ex.Message;
+                                    
+                                    string errText = ex.Message.ToLower();
+                                    if (errText.Contains("429") || errText.Contains("toomanyrequests") || errText.Contains("quota"))
+                                    {
+                                        _apiKeyManager.MarkKeyAsRateLimited(apiKey);
+                                        Logger.Log($"[RateLimit] Key {apiKey.Substring(0, 5)}... gặp lỗi giới hạn lượt dùng. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                    }
+                                    else if (errText.Contains("invalid") || errText.Contains("403") || errText.Contains("bad request") || errText.Contains("400"))
+                                    {
+                                        _apiKeyManager.MarkKeyAsError(apiKey);
+                                        Logger.Log($"[ApiKeyError] Key {apiKey.Substring(0, 5)}... gặp lỗi xác thực/cú pháp. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                    }
+                                    else
+                                    {
+                                        _apiKeyManager.MarkKeyAsError(apiKey);
+                                        Logger.Log($"[APIError] Key {apiKey.Substring(0, 5)}... gặp lỗi kết nối: {ex.Message}. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                    }
+
+                                    if (retryCount < maxRetries)
+                                    {
+                                        await Task.Delay(1500, _cts.Token);
+                                    }
+                                }
                             }
-                            catch (Exception ex) when (!_cts.Token.IsCancellationRequested &&
-                                (ex.Message.Contains("TooManyRequests") || ex.Message.Contains("429")))
+
+                            if (!success)
                             {
-                                string fallbackModel = selectedModel == "gemini-3.5-flash" ? "gemini-3-flash-preview" : "gemini-3.5-flash";
-                                Logger.Log($"[RateLimit] Model {selectedModel} báo quá tải. Chờ 3s rồi chuyển sang model dự phòng {fallbackModel}...");
-                                await Task.Delay(3000, _cts.Token);
-                                await ProcessImageAsync(item, apiKey, fallbackModel, currentShipper, _cts.Token);
+                                throw new Exception(lastErrorMessage);
                             }
 
                             int current = Interlocked.Increment(ref completed);
@@ -424,7 +468,8 @@ namespace AccountingOcrTest
                     {
                         var format = mimeType == "image/png" ? System.Drawing.Imaging.ImageFormat.Png : System.Drawing.Imaging.ImageFormat.Jpeg;
                         apiImage.Save(ms, format);
-                        base64Image = Convert.ToBase64String(ms.ToArray());
+                        // Use GetBuffer() + Length to avoid allocating a copy array on LOH
+                        base64Image = Convert.ToBase64String(ms.GetBuffer(), 0, (int)ms.Length);
                     }
                 }
                 finally
@@ -438,6 +483,14 @@ namespace AccountingOcrTest
             if (item.Data != null)
             {
                 item.Data.ten_nguoi_giao = shipperName;
+                item.Data.khach_hang = FuzzyMatcher.FormatKhachHang(item.Data.khach_hang);
+                item.Data.diem_giao = FuzzyMatcher.FormatDiemGiao(item.Data.diem_giao);
+
+                if (item.Data.danh_sach_hang_hoa != null)
+                {
+                    // Remove redundant printed items that have sl_xuat = 0, sl_nhan = 0, and sl_hong = 0
+                    item.Data.danh_sach_hang_hoa.RemoveAll(x => x.sl_xuat == 0 && x.sl_nhan == 0 && x.sl_hong == 0);
+                }
             }
         }
 
@@ -450,7 +503,7 @@ BẮT BUỘC ghi toàn bộ quá trình phân tích của bạn vào trường `
 
 Bước 1: Phân tích Cấu trúc Bảng và Thông tin chung
 - Ngày giao (ngay_giao): TÌM NGÀY GIAO HÀNG (Delivery Date / Date Received). TUYỆT ĐỐI BỎ QUA 'Ngày In' (Printed Date) và 'Ngày Đặt Hàng' (Order Date). BẮT BUỘC TÌM KIẾM THEO ĐÚNG MỨC ĐỘ ƯU TIÊN: 1. Ngày ghi viết tay trên con dấu -> 2. NGÀY GHI VIẾT TAY bằng bút nằm rải rác (gần chữ ký, ghi chú...) -> 3. Ngày được in sẵn ở ô Ngày Giao Hàng. ĐẶC BIỆT CHÚ Ý TRƯỜNG HỢP SỬA NGÀY: Đôi khi ngày đóng dấu/in sẵn bị sai (ví dụ 24-03) và người ta dùng bút viết tay một ngày khác to hơn, khoanh tròn, gạch bỏ ngày cũ hoặc viết đè lên bên cạnh (ví dụ khoanh tròn số '09' đè lên số '24'). Nếu thấy có hiện tượng sửa ngày như vậy, bạn BẮT BUỘC phải ghép con số được sửa bằng tay đó vào làm ngày giao (ví dụ kết quả trả về phải là 09/03/2026 chứ không phải 24/03/2026 hay Ngày In).
-- Khách hàng (khach_hang): Tìm tên các khách hàng (ví dụ: Bigc, Aeon, Winmart, B11, Biggreen...) thường là tên các chuỗi siêu thị hoặc cửa hàng.
+- Khách hàng (khach_hang): Tìm tên thương hiệu/tên thương mại chính của khách hàng (ví dụ: Aeon, Winmart, Bigc, B11, Biggreen...). BẮT BUỘC bỏ qua toàn bộ phần tiền tố/hậu tố pháp lý rườm rà như 'CÔNG TY TNHH', 'CÔNG TY CỔ PHẦN', 'CHI NHÁNH', 'MỘT THÀNH VIÊN', 'VIỆT NAM'... Ví dụ: nếu hóa đơn ghi 'CÔNG TY TNHH AEON VIỆT NAM' thì chỉ trích xuất 'Aeon'. Nếu ghi 'CÔNG TY CP THƯƠNG MẠI WINCOMMERCE' thì chỉ trích xuất 'Winmart'.
 - Điểm giao (diem_giao): Tên chi nhánh của khách hàng. ĐẶC BIỆT CHÚ Ý: Nếu trên hóa đơn có ghi MÃ CỬA HÀNG đi kèm TÊN CỬA HÀNG (ví dụ như dòng '1708 - WM HNI Lê Văn Thiêm'), bạn PHẢI trích xuất NGUYÊN VẸN toàn bộ chuỗi đó làm điểm giao (tức là lấy đầy đủ cả mã và tên: '1708 - WM HNI Lê Văn Thiêm'). Nếu không có mã cửa hàng, thì lấy tên chi nhánh ngắn gọn như bình thường (ví dụ: 'Xuân Thủy', 'Ciputra'). Thường thông tin này nằm ở phần vị trí/địa chỉ điểm giao.
 
 Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Viết tay (Ink-to-Text & Symbol Analysis) - QUAN TRỌNG NHẤT
@@ -532,8 +585,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             // Fix #3: Use static HttpClient + pass CancellationToken
             string url = $"https://generativelanguage.googleapis.com/v1beta/models/{modelName}:generateContent?key={apiKey}";
             
-            var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync(url, content, token);
+            using var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+            using var response = await _httpClient.PostAsync(url, content, token);
             
             string responseStr = await response.Content.ReadAsStringAsync(token);
 
@@ -552,10 +605,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     var text = candidates[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString();
                     Logger.Log($"[Gemini API Result]\n{text}\n-----------------------");
                     
-                    InvoiceData data = JsonSerializer.Deserialize<InvoiceData>(text, new JsonSerializerOptions 
-                    { 
-                        PropertyNameCaseInsensitive = true 
-                    });
+                    InvoiceData data = JsonSerializer.Deserialize<InvoiceData>(text, _jsonOptions);
                     return data;
                 }
                 else
@@ -1278,83 +1328,73 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             {
                 await Task.Run(() =>
                 {
-                    var queue = new ConcurrentQueue<ProcessingItem>(processedSuccessItems);
-                    int maxConcurrency = Math.Min(6, processedSuccessItems.Count);
-                    var tasks = new List<Task>();
+                    // Phase 1: Fuzzy match parallel (CPU-bound, no DB access)
+                    var matchResults = new ConcurrentBag<(string fileName, InvoiceData data, InvoiceItem itemRow,
+                        string tenKhop, string hst, string donVi)>();
 
-                    for (int i = 0; i < maxConcurrency; i++)
+                    Parallel.ForEach(processedSuccessItems, item =>
                     {
-                        tasks.Add(Task.Run(() =>
+                        string fileName = Path.GetFileName(item.FilePath);
+                        var data = item.Data;
+                        if (data?.danh_sach_hang_hoa == null) return;
+
+                        foreach (var itemRow in data.danh_sach_hang_hoa)
                         {
-                            while (queue.TryDequeue(out var item))
+                            var matchedItem = FuzzyMatcher.FindBestMatch(itemRow.ten_hang, targetRefItems, out double bestScore);
+
+                            string tenKhop = "";
+                            string hst = "";
+                            string donVi = "";
+
+                            if (matchedItem != null && bestScore > 0.5)
                             {
-                                string fileName = Path.GetFileName(item.FilePath);
-                                var data = item.Data;
-                                if (data == null) continue;
+                                tenKhop = matchedItem.TenHang;
+                                hst = matchedItem.VietTat;
+                                donVi = matchedItem.DonViTinh;
+                            }
+                            matchResults.Add((fileName, data, itemRow, tenKhop, hst, donVi));
+                        }
+                    });
 
-                                if (data.danh_sach_hang_hoa != null)
+                    // Phase 2: Batch DuckDB insert — single connection, no lock needed
+                    try
+                    {
+                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                        {
+                            conn.Open();
+                            foreach (var r in matchResults)
+                            {
+                                using (var cmd = conn.CreateCommand())
                                 {
-                                    foreach (var itemRow in data.danh_sach_hang_hoa)
-                                    {
-                                        double bestScore = 0.0;
-                                        var matchedItem = FuzzyMatcher.FindBestMatch(itemRow.ten_hang, targetRefItems, out bestScore);
+                                    cmd.CommandText = @"
+                                        INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status) 
+                                        VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status);";
 
-                                        string tenKhop = "";
-                                        string hst = "";
-                                        string donVi = "";
+                                    cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
+                                    cmd.Parameters.Add(new DuckDBParameter("file_name", r.fileName));
+                                    cmd.Parameters.Add(new DuckDBParameter("ngay_giao", r.data.ngay_giao ?? ""));
+                                    cmd.Parameters.Add(new DuckDBParameter("khach_hang", FuzzyMatcher.FormatKhachHang(r.data.khach_hang ?? "")));
+                                    cmd.Parameters.Add(new DuckDBParameter("diem_giao", FuzzyMatcher.FormatDiemGiao(r.data.diem_giao ?? "")));
+                                    cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", r.data.ten_nguoi_giao ?? ""));
+                                    cmd.Parameters.Add(new DuckDBParameter("ten_hang_goc", r.itemRow.ten_hang ?? ""));
+                                    cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", r.tenKhop));
+                                    cmd.Parameters.Add(new DuckDBParameter("hst", r.hst));
+                                    cmd.Parameters.Add(new DuckDBParameter("don_vi", r.donVi));
+                                    cmd.Parameters.Add(new DuckDBParameter("sl_xuat", r.itemRow.sl_xuat));
+                                    cmd.Parameters.Add(new DuckDBParameter("sl_nhan", r.itemRow.sl_nhan));
+                                    cmd.Parameters.Add(new DuckDBParameter("sl_hong", r.itemRow.sl_hong));
+                                    cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
+                                    cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
 
-                                        if (matchedItem != null && bestScore > 0.5)
-                                        {
-                                            tenKhop = matchedItem.TenHang;
-                                            hst = matchedItem.VietTat;
-                                            donVi = matchedItem.DonViTinh;
-                                        }
-
-                                        lock (DbWriteLock)
-                                        {
-                                            try
-                                            {
-                                                using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
-                                                {
-                                                    conn.Open();
-                                                    using (var cmd = conn.CreateCommand())
-                                                    {
-                                                        cmd.CommandText = @"
-                                                            INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status) 
-                                                            VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status);";
-
-                                                        cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
-                                                        cmd.Parameters.Add(new DuckDBParameter("file_name", fileName));
-                                                        cmd.Parameters.Add(new DuckDBParameter("ngay_giao", data.ngay_giao ?? ""));
-                                                        cmd.Parameters.Add(new DuckDBParameter("khach_hang", FuzzyMatcher.FormatKhachHang(data.khach_hang ?? "")));
-                                                        cmd.Parameters.Add(new DuckDBParameter("diem_giao", FuzzyMatcher.FormatDiemGiao(data.diem_giao ?? "")));
-                                                        cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", data.ten_nguoi_giao ?? ""));
-                                                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_goc", itemRow.ten_hang ?? ""));
-                                                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", tenKhop));
-                                                        cmd.Parameters.Add(new DuckDBParameter("hst", hst));
-                                                        cmd.Parameters.Add(new DuckDBParameter("don_vi", donVi));
-                                                        cmd.Parameters.Add(new DuckDBParameter("sl_xuat", itemRow.sl_xuat));
-                                                        cmd.Parameters.Add(new DuckDBParameter("sl_nhan", itemRow.sl_nhan));
-                                                        cmd.Parameters.Add(new DuckDBParameter("sl_hong", itemRow.sl_hong));
-                                                        cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
-                                                        cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
-
-                                                        cmd.ExecuteNonQuery();
-                                                    }
-                                                }
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                Logger.Log($"[DuckDB Lỗi] Ghi staging_item: {ex.Message}");
-                                            }
-                                        }
-                                    }
+                                    cmd.ExecuteNonQuery();
                                 }
                             }
-                        }));
+                        }
                     }
-
-                    Task.WaitAll(tasks.ToArray());
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"[DuckDB Lỗi] Batch ghi staging_items: {ex.Message}");
+                    }
                 });
 
                 LoadStagingItemsFromDb();
@@ -1396,14 +1436,12 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
                     {
                         conn.Open();
-                        foreach (var item in selected)
+                        using (var cmd = conn.CreateCommand())
                         {
-                            using (var cmd = conn.CreateCommand())
-                            {
-                                cmd.CommandText = "DELETE FROM staging_items WHERE id = $id;";
-                                cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
-                                cmd.ExecuteNonQuery();
-                            }
+                            // Batch delete — single statement with IN clause
+                            var idList = string.Join(", ", selected.Select(x => $"'{x.Id}'"));
+                            cmd.CommandText = $"DELETE FROM staging_items WHERE id IN ({idList});";
+                            cmd.ExecuteNonQuery();
                         }
                     }
                     LoadStagingItemsFromDb();
@@ -1571,18 +1609,15 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         workbook.Save();
                     }
 
-                    // Update status in DuckDB staging to 'Synced'
+                    // Update status in DuckDB staging to 'Synced' — batch single statement
                     using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
                     {
                         conn.Open();
-                        foreach (var item in itemsToCommit)
+                        using (var cmd = conn.CreateCommand())
                         {
-                            using (var cmd = conn.CreateCommand())
-                            {
-                                cmd.CommandText = "UPDATE staging_items SET status = 'Synced' WHERE id = $id;";
-                                cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
-                                cmd.ExecuteNonQuery();
-                            }
+                            var idList = string.Join(", ", itemsToCommit.Select(x => $"'{x.Id}'"));
+                            cmd.CommandText = $"UPDATE staging_items SET status = 'Synced' WHERE id IN ({idList});";
+                            cmd.ExecuteNonQuery();
                         }
                     }
                 });
@@ -1611,6 +1646,19 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             {
                 HideRefLoading();
             }
+        }
+
+        private void MainWindow_Closing(object? sender, CancelEventArgs e)
+        {
+            _cts?.Dispose();
+            _refWorkbook?.Dispose();
+            _refWorkbook = null;
+            if (_tessEngine.IsValueCreated)
+            {
+                _tessEngine.Value?.Dispose();
+            }
+            _tessEngine.Dispose();
+            Logger.Flush();
         }
     }
 
@@ -1759,10 +1807,60 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
         public static string FormatKhachHang(string value)
         {
             if (string.IsNullOrEmpty(value)) return "";
-            string trimmed = value.Trim();
-            if (trimmed.Length == 0) return "";
-            if (trimmed.Length == 1) return trimmed.ToUpper();
-            return char.ToUpper(trimmed[0]) + trimmed.Substring(1).ToLower();
+            
+            string cleaned = value;
+            string[] noiseKeywords = new[] 
+            {
+                "công ty tnhh một thành viên",
+                "hộ kinh doanh cá thể",
+                "doanh nghiệp tư nhân",
+                "thương mại dịch vụ",
+                "chi nhánh công ty",
+                "công ty cổ phần",
+                "công ty tnhh mtv",
+                "hộ kinh doanh",
+                "tổng công ty",
+                "công ty tnhh",
+                "thương mại",
+                "phát triển",
+                "công ty cp",
+                "hợp tác xã",
+                "chi nhánh",
+                "sản xuất",
+                "tập đoàn",
+                "việt nam",
+                "viet nam",
+                "vietnam",
+                "dịch vụ",
+                "đầu tư",
+                "dntn",
+                "hkd"
+            };
+
+            foreach (var noise in noiseKeywords)
+            {
+                int index;
+                while ((index = cleaned.IndexOf(noise, StringComparison.OrdinalIgnoreCase)) != -1)
+                {
+                    cleaned = cleaned.Remove(index, noise.Length);
+                }
+            }
+
+            // Clean up extra separators or punctuation
+            cleaned = cleaned.Replace("-", " ").Replace(",", " ").Replace("(", " ").Replace(")", " ");
+            
+            var words = cleaned.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            cleaned = string.Join(" ", words);
+
+            if (string.IsNullOrWhiteSpace(cleaned))
+            {
+                cleaned = value.Trim();
+            }
+
+            if (cleaned.Length == 0) return "";
+            if (cleaned.Length == 1) return cleaned.ToUpper();
+            
+            return char.ToUpper(cleaned[0]) + cleaned.Substring(1).ToLower();
         }
     }
 }

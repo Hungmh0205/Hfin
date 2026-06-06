@@ -110,5 +110,33 @@ namespace AccountingOcrTest
                 await Task.Delay(2000, token);
             }
         }
+
+        public void MarkKeyAsRateLimited(string key)
+        {
+            lock (_lockObj)
+            {
+                var k = Keys.FirstOrDefault(x => x.Key == key);
+                if (k != null)
+                {
+                    k.Status = KeyStatus.RateLimited;
+                    k.RequestsInLastMinute = MaxRequestsPerMinute;
+                    k.WindowStart = DateTime.Now;
+                    Logger.Log($"[ApiKeyManager] Đánh dấu Key {k.Key.Substring(0, 5)}... gặp lỗi Rate Limit (429/quota). Bắt đầu thời gian chờ 60s.");
+                }
+            }
+        }
+
+        public void MarkKeyAsError(string key)
+        {
+            lock (_lockObj)
+            {
+                var k = Keys.FirstOrDefault(x => x.Key == key);
+                if (k != null)
+                {
+                    k.Status = KeyStatus.Error;
+                    Logger.Log($"[ApiKeyManager] Đánh dấu Key {k.Key.Substring(0, 5)}... bị lỗi vĩnh viễn (Error/403/400).");
+                }
+            }
+        }
     }
 }

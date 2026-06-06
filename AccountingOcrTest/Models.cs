@@ -5,14 +5,56 @@ using System.Runtime.CompilerServices;
 
 namespace AccountingOcrTest
 {
-    public class InvoiceData
+    public class InvoiceData : INotifyPropertyChanged
     {
-        public string quy_trinh_suy_luan { get; set; }
-        public string ten_nguoi_giao { get; set; }
-        public string ngay_giao { get; set; }
-        public string khach_hang { get; set; }
-        public string diem_giao { get; set; }
-        public List<InvoiceItem> danh_sach_hang_hoa { get; set; }
+        private string _quy_trinh_suy_luan = "";
+        private string _ten_nguoi_giao = "";
+        private string _ngay_giao = "";
+        private string _khach_hang = "";
+        private string _diem_giao = "";
+        private List<InvoiceItem> _danh_sach_hang_hoa = new List<InvoiceItem>();
+
+        public string quy_trinh_suy_luan
+        {
+            get => _quy_trinh_suy_luan;
+            set { _quy_trinh_suy_luan = value; OnPropertyChanged(); }
+        }
+
+        public string ten_nguoi_giao
+        {
+            get => _ten_nguoi_giao;
+            set { _ten_nguoi_giao = value; OnPropertyChanged(); }
+        }
+
+        public string ngay_giao
+        {
+            get => _ngay_giao;
+            set { _ngay_giao = value; OnPropertyChanged(); }
+        }
+
+        public string khach_hang
+        {
+            get => _khach_hang;
+            set { _khach_hang = FuzzyMatcher.FormatKhachHang(value); OnPropertyChanged(); }
+        }
+
+        public string diem_giao
+        {
+            get => _diem_giao;
+            set { _diem_giao = FuzzyMatcher.FormatDiemGiao(value); OnPropertyChanged(); }
+        }
+
+        public List<InvoiceItem> danh_sach_hang_hoa
+        {
+            get => _danh_sach_hang_hoa;
+            set { _danh_sach_hang_hoa = value; OnPropertyChanged(); }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string? name = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
     }
 
     public class InvoiceItem : INotifyPropertyChanged
