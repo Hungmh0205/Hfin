@@ -3,135 +3,312 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Accounting OCR - Batch Processing" Height="800" Width="1200" WindowState="Maximized">
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-
-        <!-- Top Bar -->
-        <Border Background="#f3f4f6" Padding="10" BorderBrush="#e5e7eb" BorderThickness="0,0,0,1">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal">
-                    <Button Content="Cài đặt API Key" Padding="10,5" Click="SettingsBtn_Click"/>
-                    <Button Content="Thêm Ảnh" Margin="10,0,0,0" Padding="10,5" Click="AddImagesBtn_Click"/>
-                    <TextBlock Text="Người giao:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
-                    <ComboBox x:Name="ShipperSelector" Width="150" IsEditable="True" VerticalContentAlignment="Center" Padding="5,0"/>
-                    <TextBlock Text="Model:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
-                    <ComboBox x:Name="ModelSelector" Width="200" SelectedIndex="0" VerticalContentAlignment="Center" Padding="5,0">
-                        <ComboBoxItem Content="gemini-3.5-flash"/>
-                        <ComboBoxItem Content="gemini-3-flash-preview"/>
-                    </ComboBox>
-                </StackPanel>
-                
-                <StackPanel Orientation="Horizontal" Grid.Column="2" VerticalAlignment="Center">
-                    <Button x:Name="NewSessionBtn" Content="🔄 Tạo phiên mới" Padding="10,5" Background="#f97316" Foreground="White" FontWeight="Bold" Click="NewSessionBtn_Click" Margin="0,0,10,0"/>
-                    <TextBlock x:Name="ProgressText" Text="0/0" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed" FontWeight="Bold" Foreground="#6366f1"/>
-                    <ProgressBar x:Name="ProgressBar" Width="150" Height="18" Margin="0,0,10,0" Visibility="Collapsed" Foreground="#10b981"/>
-                    <Button x:Name="CancelBtn" Content="⏹ Hủy" Padding="10,5" Background="#ef4444" Foreground="White" FontWeight="Bold" Click="CancelBtn_Click" Visibility="Collapsed" Margin="0,0,10,0"/>
-                    <Button x:Name="StartBtn" Content="▶ Bắt đầu xử lý" Padding="15,5" Background="#10b981" Foreground="White" FontWeight="Bold" Click="StartBtn_Click"/>
-                </StackPanel>
-            </Grid>
-        </Border>
-
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- Left Sidebar -->
-            <Grid Background="#f9fafb">
+        <TabControl x:Name="MainTabControl">
+        <!-- Tab 1: Trang chủ -->
+        <TabItem Header="Trang chủ" FontSize="14" FontWeight="SemiBold">
+            <Grid Background="#f3f4f6" Margin="10">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBox x:Name="SearchBox" Margin="10" Padding="5" TextChanged="SearchBox_TextChanged" Text="🔍 Tìm kiếm..."/>
-                <ListBox x:Name="ItemsListBox" Grid.Row="1" Background="Transparent" BorderThickness="0" Margin="5" SelectionChanged="ItemsListBox_SelectionChanged">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <Border Padding="10" Margin="0,0,0,5" Background="White" BorderBrush="#e5e7eb" BorderThickness="1" CornerRadius="4">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="{Binding StatusIcon}" Width="20" FontWeight="Bold" Foreground="{Binding StatusColor}"/>
-                                    <TextBlock Text="{Binding SmartName}" Margin="10,0,0,0" TextTrimming="CharacterEllipsis" Width="230"/>
-                                </StackPanel>
-                            </Border>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-            </Grid>
 
-            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="#e5e7eb"/>
+                <!-- Top bar for actions on Homepage -->
+                <Border Background="White" CornerRadius="5" Padding="10" Margin="0,0,0,10" BorderBrush="#e5e7eb" BorderThickness="1">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <Button Content="📁 Nạp File Mới" Padding="15,6" Background="#0078D7" Foreground="White" BorderThickness="0" Cursor="Hand" Click="HomeImportFile_Click" FontWeight="Bold"/>
+                        
+                        <Button Content="🗑️ Xóa đã chọn" Grid.Column="1" Margin="10,0,0,0" Padding="15,6" Background="#ef4444" Foreground="White" BorderThickness="0" Cursor="Hand" Click="HomeDeleteSelected_Click" FontWeight="Bold"/>
 
-            <!-- Right Preview Area -->
-            <Grid Grid.Column="2" Margin="10">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="5"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <!-- Left: Image Preview -->
-                <Border BorderBrush="#e5e7eb" BorderThickness="1" Background="#f3f4f6">
-                    <Image x:Name="PreviewImage" Stretch="Uniform"/>
+                        <TextBlock Grid.Column="2" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray" FontStyle="Italic" Text="* Danh sách tệp Excel đã cấu hình. Chọn tệp và bấm 'Nạp' để hiển thị nhanh." HorizontalAlignment="Right"/>
+                    </Grid>
                 </Border>
 
-                <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="Transparent"/>
-
-                <!-- Right: OCR Data -->
-                <Grid Grid.Column="2" Margin="10,0,0,0">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    
-                    <StackPanel>
-                        <TextBlock Text="Thông tin chung" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
-                        <Grid Margin="0,0,0,20">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="Ngày giao" Foreground="Gray"/>
-                                <TextBox x:Name="NgayGiaoText" FontWeight="Bold" FontSize="14" IsReadOnly="True" BorderThickness="0" Background="Transparent"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="1">
-                                <TextBlock Text="Khách hàng" Foreground="Gray"/>
-                                <TextBox x:Name="KhachHangText" FontWeight="Bold" FontSize="14" IsReadOnly="True" BorderThickness="0" Background="Transparent"/>
-                            </StackPanel>
-                            <StackPanel Grid.Column="2">
-                                <TextBlock Text="Điểm giao" Foreground="Gray"/>
-                                <TextBox x:Name="DiemGiaoText" FontWeight="Bold" FontSize="14" IsReadOnly="True" BorderThickness="0" Background="Transparent"/>
-                            </StackPanel>
-                        </Grid>
+                <!-- Configuration List Grid Area -->
+                <Border Grid.Row="1" Background="White" CornerRadius="5" Padding="10" BorderBrush="#e5e7eb" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
                         
-                        <TextBlock Text="Chi tiết hàng hóa" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
-                    </StackPanel>
+                        <TextBlock Text="Danh sách tệp cấu hình" FontWeight="Bold" FontSize="16" Foreground="#1e293b" Margin="0,0,0,10"/>
+                        
+                        <DataGrid x:Name="HomeConfigsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" AlternatingRowBackground="#f9fafb" RowHeight="35" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsActive}" Value="True">
+                                            <Setter Property="Background" Value="#e6f4ea"/>
+                                            <Setter Property="Foreground" Value="#137333"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Tên File" Binding="{Binding FileName}" Width="200" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Đường dẫn gốc" Binding="{Binding OriginalPath}" Width="*" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Sheet Tham chiếu" Binding="{Binding RefSheet}" Width="150" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Sheet Bán hàng" Binding="{Binding SalesSheet}" Width="150" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="Trạng thái" Binding="{Binding StatusText}" Width="110" IsReadOnly="True">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{Binding StatusColor}"/>
+                                            <Setter Property="FontWeight" Value="Bold"/>
+                                            <Setter Property="HorizontalAlignment" Value="Center"/>
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Ngày thêm" Binding="{Binding DateAdded, StringFormat=\{0:dd/MM/yyyy HH:mm\}}" Width="150" IsReadOnly="True"/>
+                                <DataGridTemplateColumn Header="Hành động" Width="180">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                                <Button Content="⚡ Nạp" IsEnabled="{Binding CanLoad}" Padding="10,2" Margin="0,0,5,0" Background="#10b981" Foreground="White" BorderThickness="0" FontWeight="Bold" Cursor="Hand" Click="HomeLoadConfigRow_Click" Tag="{Binding}"/>
+                                                <Button Content="🗑️ Xóa" Padding="10,2" Background="#ef4444" Foreground="White" BorderThickness="0" FontWeight="Bold" Cursor="Hand" Click="HomeDeleteConfigRow_Click" Tag="{Binding}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Border>
+            </Grid>
+        </TabItem>
 
-                    <DataGrid x:Name="ProductsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" AlternatingRowBackground="#f9fafb" RowHeight="30" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
-                        <DataGrid.Columns>
-                            <DataGridTextColumn Header="Tên Hàng" Binding="{Binding ten_hang}" Width="*"/>
-                            <DataGridTextColumn Header="SL Xuất" Binding="{Binding sl_xuat}" Width="80"/>
-                            <DataGridTextColumn Header="SL Nhận" Binding="{Binding sl_nhan}" Width="80"/>
-                            <DataGridTextColumn Header="SL Hỏng" Binding="{Binding sl_hong}" Width="80">
-                                <DataGridTextColumn.ElementStyle>
-                                    <Style TargetType="TextBlock">
-                                        <Setter Property="Foreground" Value="Red"/>
-                                        <Setter Property="FontWeight" Value="Bold"/>
-                                    </Style>
-                                </DataGridTextColumn.ElementStyle>
-                            </DataGridTextColumn>
-                        </DataGrid.Columns>
-                    </DataGrid>
+        <TabItem Header="Xử lý OCR" FontSize="14" FontWeight="SemiBold">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Top Bar -->
+                <Border Background="#f3f4f6" Padding="10" BorderBrush="#e5e7eb" BorderThickness="0,0,0,1">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Cài đặt API Key" Padding="10,5" Click="SettingsBtn_Click"/>
+                            <Button Content="Thêm Ảnh" Margin="10,0,0,0" Padding="10,5" Click="AddImagesBtn_Click"/>
+                            <TextBlock Text="Người giao:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
+                            <ComboBox x:Name="ShipperSelector" Width="150" IsEditable="True" VerticalContentAlignment="Center" Padding="5,0"/>
+                            <TextBlock Text="Model:" VerticalAlignment="Center" Margin="15,0,5,0" FontWeight="Bold"/>
+                            <ComboBox x:Name="ModelSelector" Width="200" SelectedIndex="0" VerticalContentAlignment="Center" Padding="5,0">
+                                <ComboBoxItem Content="gemini-3.5-flash"/>
+                                <ComboBoxItem Content="gemini-3-flash-preview"/>
+                            </ComboBox>
+                        </StackPanel>
+                        
+                        <StackPanel Orientation="Horizontal" Grid.Column="2" VerticalAlignment="Center">
+                            <Button x:Name="NewSessionBtn" Content="🔄 Tạo phiên mới" Padding="10,5" Background="#f97316" Foreground="White" FontWeight="Bold" Click="NewSessionBtn_Click" Margin="0,0,10,0"/>
+                            <TextBlock x:Name="ProgressText" Text="0/0" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed" FontWeight="Bold" Foreground="#6366f1"/>
+                            <ProgressBar x:Name="ProgressBar" Width="150" Height="18" Margin="0,0,10,0" Visibility="Collapsed" Foreground="#10b981"/>
+                            <Button x:Name="CancelBtn" Content="⏹ Hủy" Padding="10,5" Background="#ef4444" Foreground="White" FontWeight="Bold" Click="CancelBtn_Click" Visibility="Collapsed" Margin="0,0,10,0"/>
+                            <Button x:Name="StartBtn" Content="▶ Bắt đầu xử lý" Padding="15,5" Background="#10b981" Foreground="White" FontWeight="Bold" Click="StartBtn_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left Sidebar -->
+                    <Grid Background="#f9fafb">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBox x:Name="SearchBox" Margin="10" Padding="5" TextChanged="SearchBox_TextChanged" Text="🔍 Tìm kiếm..."/>
+                        <ListBox x:Name="ItemsListBox" Grid.Row="1" Background="Transparent" BorderThickness="0" Margin="5" SelectionChanged="ItemsListBox_SelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Padding="10" Margin="0,0,0,5" Background="White" BorderBrush="#e5e7eb" BorderThickness="1" CornerRadius="4">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding StatusIcon}" Width="20" FontWeight="Bold" Foreground="{Binding StatusColor}"/>
+                                            <TextBlock Text="{Binding SmartName}" Margin="10,0,0,0" TextTrimming="CharacterEllipsis" Width="230"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+
+                    <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="#e5e7eb"/>
+
+                    <!-- Right Preview Area -->
+                    <Grid Grid.Column="2" Margin="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="5"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left: Image Preview -->
+                        <Border BorderBrush="#e5e7eb" BorderThickness="1" Background="#f3f4f6">
+                            <Image x:Name="PreviewImage" Stretch="Uniform"/>
+                        </Border>
+
+                        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" Background="Transparent"/>
+
+                        <!-- Right: OCR Data -->
+                        <Grid Grid.Column="2" Margin="10,0,0,0" DataContext="{Binding ElementName=ItemsListBox, Path=SelectedItem}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            
+                            <StackPanel>
+                                <TextBlock Text="Thông tin chung" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,10,0">
+                                        <TextBlock Text="Ngày giao" Foreground="Gray"/>
+                                        <TextBox x:Name="NgayGiaoText" Text="{Binding Data.ngay_giao, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" FontWeight="Bold" FontSize="14" Padding="4" BorderThickness="1" BorderBrush="#e5e7eb"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                        <TextBlock Text="Khách hàng" Foreground="Gray"/>
+                                        <TextBox x:Name="KhachHangText" Text="{Binding Data.khach_hang, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" FontWeight="Bold" FontSize="14" Padding="4" BorderThickness="1" BorderBrush="#e5e7eb"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="Điểm giao" Foreground="Gray"/>
+                                        <TextBox x:Name="DiemGiaoText" Text="{Binding Data.diem_giao, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" FontWeight="Bold" FontSize="14" Padding="4" BorderThickness="1" BorderBrush="#e5e7eb"/>
+                                    </StackPanel>
+                                </Grid>
+                                
+                                <TextBlock Text="Chi tiết hàng hóa" FontWeight="Bold" FontSize="16" Margin="0,0,0,10"/>
+                            </StackPanel>
+ 
+                            <DataGrid x:Name="ProductsGrid" Grid.Row="1" ItemsSource="{Binding Data.danh_sach_hang_hoa}" AutoGenerateColumns="False" CanUserAddRows="False" AlternatingRowBackground="#f9fafb" RowHeight="30" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Tên Hàng" Binding="{Binding ten_hang, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="*"/>
+                                    <DataGridTextColumn Header="SL Xuất" Binding="{Binding sl_xuat, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="80"/>
+                                    <DataGridTextColumn Header="SL Nhận" Binding="{Binding sl_nhan, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}" Width="80"/>
+                                    <DataGridTextColumn Header="SL Hỏng" Binding="{Binding sl_hong, Mode=OneWay}" IsReadOnly="True" Width="80">
+                                        <DataGridTextColumn.ElementStyle>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="Red"/>
+                                                <Setter Property="FontWeight" Value="Bold"/>
+                                            </Style>
+                                        </DataGridTextColumn.ElementStyle>
+                                    </DataGridTextColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
+                    </Grid>
                 </Grid>
             </Grid>
-        </Grid>
-    </Grid>
+        </TabItem>
+
+        <!-- Tab 2: Reference Excel -->
+        <TabItem Header="Tham chiếu" FontSize="14" FontWeight="SemiBold">
+            <Grid Background="#f3f4f6" Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Top bar for Reference Excel Loading -->
+                <Border Background="White" CornerRadius="5" Padding="10" Margin="0,0,0,10" BorderBrush="#e5e7eb" BorderThickness="1">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <Button Content="📁 Nạp File Excel" Padding="15,6" Background="#0078D7" Foreground="White" BorderThickness="0" Cursor="Hand" Click="LoadRefExcel_Click" FontWeight="Bold"/>
+                        
+                        <Button x:Name="ChangeSheetsBtn" Grid.Column="1" Content="⚙️ Chọn Sheet" Margin="10,0,0,0" Padding="12,6" Background="#4b5563" Foreground="White" BorderThickness="0" Cursor="Hand" Click="ChangeSheets_Click" FontWeight="Bold" IsEnabled="False"/>
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="20,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="Sheet Tham chiếu: " Foreground="#475569"/>
+                            <TextBlock x:Name="SelectedRefSheetText" Text="Chưa chọn" FontWeight="Bold" Foreground="#1e293b" Margin="0,0,20,0"/>
+                            
+                            <TextBlock Text="Sheet Bán hàng: " Foreground="#475569"/>
+                            <TextBlock x:Name="SelectedSalesSheetText" Text="Chưa chọn" FontWeight="Bold" Foreground="#1e293b"/>
+                        </StackPanel>
+                        
+                        <TextBlock x:Name="RefFilePathText" Grid.Column="4" VerticalAlignment="Center" Margin="15,0,0,0" Foreground="Gray" FontStyle="Italic" Text="Chưa chọn file Excel tham chiếu." TextTrimming="CharacterEllipsis" HorizontalAlignment="Right"/>
+                    </Grid>
+                </Border>
+
+                <!-- Nested Tab Control for Reference & Sales Sheets -->
+                <TabControl Grid.Row="1" Background="Transparent" BorderThickness="0">
+                    <TabItem Header="Sản phẩm tham chiếu" FontSize="13" Padding="15,6" FontWeight="SemiBold">
+                        <Border Background="White" CornerRadius="0,0,5,5" Padding="10" BorderBrush="#e5e7eb" BorderThickness="1">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                
+                                <TextBlock Text="Danh sách sản phẩm tiêu chuẩn (Đã lọc bỏ các mặt hàng tính theo Kg)" FontWeight="Bold" FontSize="14" Foreground="#333" Margin="0,0,0,10"/>
+                                
+                                <DataGrid x:Name="RefDataGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="True" AlternatingRowBackground="#f9fafb" RowHeight="30" GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="Viết tắt" Binding="{Binding VietTat}" Width="150"/>
+                                        <DataGridTextColumn Header="Tên hàng" Binding="{Binding TenHang}" Width="*"/>
+                                        <DataGridTextColumn Header="Đơn vị tính" Binding="{Binding DonViTinh}" Width="150"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </Grid>
+                        </Border>
+                    </TabItem>
+                    <TabItem Header="Dữ liệu bán hàng" FontSize="13" Padding="15,6" FontWeight="SemiBold">
+                        <Border Background="White" CornerRadius="0,0,5,5" Padding="10" BorderBrush="#e5e7eb" BorderThickness="1">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                
+                                <TextBlock Text="Dữ liệu thô từ Sheet Bán hàng (Có gì hiển thị nấy, tối ưu dữ liệu lớn)" FontWeight="Bold" FontSize="14" Foreground="#333" Margin="0,0,0,10"/>
+                                
+                                <DataGrid x:Name="SalesDataGrid" Grid.Row="1" AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False" IsReadOnly="True" 
+                                          AlternatingRowBackground="#f9fafb" RowHeight="30" GridLinesVisibility="Horizontal" HeadersVisibility="Column"
+                                          EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                          VirtualizingPanel.CacheLengthUnit="Item" VirtualizingPanel.CacheLength="20,20"/>
+                            </Grid>
+                        </Border>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </TabItem>
+    </TabControl>
+
+    <!-- Window-level Loading Overlay -->
+    <Border x:Name="RefLoadingOverlay" Background="#90FFFFFF" Visibility="Collapsed" Panel.ZIndex="100">
+        <Border HorizontalAlignment="Center" VerticalAlignment="Center" Background="White" Margin="20" Padding="30" CornerRadius="8">
+            <Border.Effect>
+                <DropShadowEffect Color="Black" Opacity="0.1" BlurRadius="10" ShadowDepth="2"/>
+            </Border.Effect>
+            <StackPanel>
+                <ProgressBar IsIndeterminate="True" Width="200" Height="10" Margin="0,0,0,15"/>
+                <TextBlock x:Name="RefLoadingText" Text="Đang tải dữ liệu..." FontSize="16" FontWeight="SemiBold" Foreground="#333" HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+    </Border>
+</Grid>
 </Window>

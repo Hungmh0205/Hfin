@@ -1,0 +1,41 @@
+<Window x:Class="AccountingOcrTest.SheetSelectorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Chọn Sheet Dữ Liệu" Height="250" Width="420"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="#f9fafb" SizeToContent="Height">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Cấu hình Sheet Excel" FontWeight="Bold" FontSize="16" Foreground="#1e293b" Margin="0,0,0,15"/>
+
+        <Grid Grid.Row="1" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="130"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Sheet Tham chiếu:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#475569"/>
+            <ComboBox x:Name="RefSheetComboBox" Grid.Column="1" Padding="5,6" Background="White"/>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,0,0,20">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="130"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Sheet Bán hàng:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#475569"/>
+            <ComboBox x:Name="SalesSheetComboBox" Grid.Column="1" Padding="5,6" Background="White"/>
+        </Grid>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Hủy" Width="80" Padding="0,6" Margin="0,0,10,0" Background="#cbd5e1" BorderThickness="0" Cursor="Hand" Click="CancelBtn_Click"/>
+            <Button Content="Xác nhận" Width="100" Padding="0,6" Background="#2563eb" Foreground="White" FontWeight="Bold" BorderThickness="0" Cursor="Hand" Click="ConfirmBtn_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

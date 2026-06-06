@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -17,6 +18,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media.Imaging;
 using Tesseract;
+using ClosedXML.Excel;
 
 namespace AccountingOcrTest
 {
@@ -29,6 +31,15 @@ namespace AccountingOcrTest
         
         private static readonly string ShippersFilePath = "shippers.json";
         private ObservableCollection<string> _shippers = new ObservableCollection<string>();
+
+        // Reference excel fields
+        private XLWorkbook? _refWorkbook;
+        private ObservableCollection<ReferenceItem> _refItems = new ObservableCollection<ReferenceItem>();
+
+        // Configs and internal copy fields
+        private ObservableCollection<ExcelConfigItem> _excelConfigs = new ObservableCollection<ExcelConfigItem>();
+        private static readonly string ConfigsFilePath = "excel_configs.json";
+        private static readonly string RawMaterialDirName = "raw_material";
 
         // Fix #3: Static HttpClient — avoids socket exhaustion and DNS caching issues
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -53,6 +64,23 @@ namespace AccountingOcrTest
             
             LoadShippers();
             ShipperSelector.ItemsSource = _shippers;
+            
+            RefDataGrid.ItemsSource = _refItems;
+
+            // Setup local raw_material dir
+            try
+            {
+                string rawPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                if (!Directory.Exists(rawPath))
+                {
+                    Directory.CreateDirectory(rawPath);
+                }
+            }
+            catch { }
+
+            // Bind homepage config list and load
+            HomeConfigsGrid.ItemsSource = _excelConfigs;
+            LoadExcelConfigs();
         }
 
         private bool SearchFilter(object item)
@@ -137,22 +165,10 @@ namespace AccountingOcrTest
                     }
                 }
                 catch { PreviewImage.Source = null; }
-
-                // Update Data
-                if (item.Data != null)
-                {
-                    NgayGiaoText.Text = item.Data.ngay_giao;
-                    KhachHangText.Text = item.Data.khach_hang;
-                    DiemGiaoText.Text = item.Data.diem_giao;
-                    ProductsGrid.ItemsSource = item.Data.danh_sach_hang_hoa;
-                }
-                else
-                {
-                    NgayGiaoText.Text = "";
-                    KhachHangText.Text = "";
-                    DiemGiaoText.Text = "";
-                    ProductsGrid.ItemsSource = null;
-                }
+            }
+            else
+            {
+                PreviewImage.Source = null;
             }
         }
 
@@ -260,12 +276,7 @@ namespace AccountingOcrTest
                                 // Update progress
                                 ProgressBar.Value = current;
                                 ProgressText.Text = $"{current}/{total}";
-
-                                // Re-bind details if this item is currently selected
-                                if (ItemsListBox.SelectedItem == item)
-                                {
-                                    ItemsListBox_SelectionChanged(null, null);
-                                }
+                                // WPF data binding automatically updates the UI
                             });
 
                             Logger.Log($"[Thành công] Đã trích xuất xong: {item.FilePath} -> {item.SmartName}");
@@ -439,6 +450,8 @@ Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Vi�
   ƯU TIÊN 2 - Rule B: Đường gạch bỏ / hủy giao. BẤT KỲ đường chữ 'Z', nét gạch chéo 'X', nét gạch ngang '-', nét gạch chéo '/', nét kẻ dọc '|', nét mũi tên (->), hoặc đường gạch tay chéo dài. Nét gạch CÓ THỂ vắt qua cột ĐVT, Đơn giá, hoặc Thành tiền. Chỉ cần TRÊN DÒNG ĐÓ bị nét mực gạch xuyên qua VÀ KHÔNG CÓ dấu ✓ kèm số:
      -> sl_nhan = 0.
      CẢNH BÁO CỰC KỲ QUAN TRỌNG VỀ PHẠM VI ĐƯỜNG KẺ: Khi thấy một đường gạch chéo dài, bạn phải XÁC NHẬN CHÍNH XÁC BẰNG THỊ GIÁC rằng đường đó THỰC SỰ ĐI QUA dòng nào. TUYỆT ĐỐI KHÔNG ĐƯỢC SUY ĐOÁN hoặc NGOẠI SUY rằng đường kẻ kéo dài hơn thực tế. Ví dụ: nếu đường kẻ kết thúc tại dòng 100 thì KHÔNG ĐƯỢC gán sl_nhan=0 cho dòng 110, 120, 130. Chỉ những dòng mà mắt thường nhìn thấy có nét mực ĐI XUYÊN QUA mới được đánh dấu hủy.
+     ĐẶC BIỆT CHÚ Ý VỚI KÝ HIỆU HỦY VIẾT TAY: Các đường vẽ tay có hình dạng gạch ngang ngắn '-', gạch lượn sóng '~', nét gạch ngang mờ hoặc nét viết tay vẽ ngang/chéo nằm ở cột checkbox/kiểm nhận của dòng (mà không đi kèm số hay dấu tick nào) đều được tính là gạch hủy dòng đó -> sl_nhan = 0.
+     LƯU Ý VỀ VỊ TRÍ NÉT MỰC: Nét gạch hủy (đường gạch ngang '-', gạch sóng '~', nét gạch chéo '/') thường chỉ được ký hiệu ngắn gọn ở cột 'Số lượng' hoặc phần khoảng trống kiểm hàng bên trái số lượng, chứ không nhất thiết phải gạch ngang qua toàn bộ tên mặt hàng hay đơn giá. Chỉ cần có bất kỳ nét gạch ngắn, nét gạch chéo hoặc ký hiệu hủy viết tay nào tương tự xuất hiện trên dòng đó (kể cả chỉ ở cột Số lượng hay cột Stt), và không có dấu tick xác nhận nhận hàng, thì bắt buộc phải ghi nhận dòng đó đã bị hủy -> sl_nhan = 0.
 
   ƯU TIÊN 3 - Rule C (MẶC ĐỊNH): Không có bất kỳ nét bút viết tay nào (chỉ có mực in máy):
      -> Giao đầy đủ. -> sl_nhan = sl_xuat.
@@ -448,7 +461,11 @@ Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Vi�
 
 Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 - Với mỗi mặt hàng, bạn phải có sl_xuat (Số lượng in trên hóa đơn) và sl_nhan (Số lượng giao thực tế, tính toán từ Bước 2).
-- Tự động tính toán: sl_hong = sl_xuat - sl_nhan. Trả về đúng giá trị toán học này. Chú ý có thể sl_hong > 0 hoặc = 0 hoặc đôi khi sl_nhan lớn hơn dẫn tới âm. Đảm bảo tính toán chính xác.";
+- Tự động tính toán: sl_hong = sl_xuat - sl_nhan. Trả về đúng giá trị toán học này. Chú ý có thể sl_hong > 0 hoặc = 0 hoặc đôi khi sl_nhan lớn hơn dẫn tới âm. Đảm bảo tính toán chính xác.
+- LƯU Ý QUAN TRỌNG VỀ HÓA ĐƠN CHỈ CÓ MỘT CỘT SỐ LƯỢNG: Nếu hóa đơn chỉ in một cột số lượng duy nhất (ví dụ: chỉ có một cột Số lượng / Quantity mà không chia riêng cột xuất và cột nhận), thì:
+  + Nếu không có ghi chú viết tay hay ký hiệu hủy/chỉnh sửa nào bên cạnh, mặc định coi như giao đủ: sl_xuat = sl_nhan = giá trị số lượng in máy đó (sl_hong = 0).
+  + Nếu có nét gạch hủy dòng đó thì sl_nhan = 0 và sl_xuat = giá trị in máy.
+  + Nếu có số lượng viết tay điều chỉnh bên cạnh thì sl_nhan = số viết tay đó và sl_xuat = giá trị in máy.";
 
             var requestBody = new
             {
@@ -596,6 +613,495 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             catch (Exception ex)
             {
                 Logger.Log($"[App] Lỗi lưu file shippers.json: {ex.Message}");
+            }
+        }
+
+        private void LoadExcelConfigs()
+        {
+            if (File.Exists(ConfigsFilePath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(ConfigsFilePath);
+                    var list = JsonSerializer.Deserialize<List<ExcelConfigItem>>(json);
+                    if (list != null)
+                    {
+                        _excelConfigs.Clear();
+                        foreach (var item in list) _excelConfigs.Add(item);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[App] Lỗi tải file excel_configs.json: {ex.Message}");
+                }
+            }
+        }
+
+        private void SaveExcelConfigs()
+        {
+            try
+            {
+                string json = JsonSerializer.Serialize(_excelConfigs.ToList(), new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(ConfigsFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[App] Lỗi lưu file excel_configs.json: {ex.Message}");
+            }
+        }
+
+        private void ShowRefLoading(string text)
+        {
+            RefLoadingText.Text = text;
+            RefLoadingOverlay.Visibility = Visibility.Visible;
+            ChangeSheetsBtn.IsEnabled = false;
+        }
+
+        private void HideRefLoading()
+        {
+            RefLoadingOverlay.Visibility = Visibility.Collapsed;
+            ChangeSheetsBtn.IsEnabled = _refWorkbook != null;
+        }
+
+        private void SetActiveExcelConfig(string localPath)
+        {
+            foreach (var cfg in _excelConfigs)
+            {
+                cfg.IsActive = cfg.LocalPath.Equals(localPath, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        private async void HomeImportFile_Click(object sender, RoutedEventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog
+            {
+                Filter = "Excel Files|*.xlsx;*.xlsm",
+                Title = "Chọn File Excel Bán Hàng & Tham Chiếu"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                string originalPath = openFileDialog.FileName;
+                string fileName = Path.GetFileName(originalPath);
+                string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                string targetPath = Path.Combine(targetDir, fileName);
+
+                try
+                {
+                    // Check if file already exists in raw_material
+                    if (File.Exists(targetPath))
+                    {
+                        var result = MessageBox.Show($"File '{fileName}' đã tồn tại trong thư mục raw_material.\n\nBạn có muốn ghi đè lên file này không? (Chọn 'No' để lưu dưới tên mới với hậu tố thời gian)", "File trùng tên", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                        
+                        if (result == MessageBoxResult.Cancel)
+                        {
+                            return;
+                        }
+                        else if (result == MessageBoxResult.No)
+                        {
+                            string nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+                            string ext = Path.GetExtension(fileName);
+                            string uniqueName = $"{nameWithoutExt}_{DateTime.Now:yyyyMMddHHmmss}{ext}";
+                            targetPath = Path.Combine(targetDir, uniqueName);
+                        }
+                    }
+
+                    // Copy file locally
+                    File.Copy(originalPath, targetPath, true);
+
+                    // Now load and configure
+                    ShowRefLoading("Đang nạp file Excel...");
+                    var workbook = await Task.Run(() => new XLWorkbook(targetPath));
+
+                    _refWorkbook?.Dispose();
+                    _refWorkbook = workbook;
+                    RefFilePathText.Text = targetPath;
+
+                    var sheetNames = _refWorkbook.Worksheets.Select(x => x.Name).ToList();
+                    HideRefLoading();
+
+                    var selectorWin = new SheetSelectorWindow(sheetNames) { Owner = this };
+                    if (selectorWin.ShowDialog() == true)
+                    {
+                        string refSheet = selectorWin.SelectedReferenceSheet;
+                        string salesSheet = selectorWin.SelectedSalesSheet;
+
+                        SelectedRefSheetText.Text = refSheet;
+                        SelectedSalesSheetText.Text = salesSheet;
+                        ChangeSheetsBtn.IsEnabled = true;
+
+                        // Save new config
+                        var configItem = new ExcelConfigItem
+                        {
+                            OriginalPath = originalPath,
+                            LocalPath = targetPath,
+                            FileName = Path.GetFileName(targetPath),
+                            RefSheet = refSheet,
+                            SalesSheet = salesSheet,
+                            DateAdded = DateTime.Now
+                        };
+                        
+                        // If same local path exists in config list, remove it first
+                        var existing = _excelConfigs.FirstOrDefault(x => x.LocalPath.Equals(targetPath, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            _excelConfigs.Remove(existing);
+                        }
+
+                        _excelConfigs.Add(configItem);
+                        SaveExcelConfigs();
+
+                        // Set active status
+                        SetActiveExcelConfig(targetPath);
+
+                        // Load data
+                        await LoadBothSheetsAsync(refSheet, salesSheet);
+
+                        // Switch to the Reference tab (Index 2)
+                        MainTabControl.SelectedIndex = 2;
+                    }
+                    else
+                    {
+                        // Clean up copied file if they cancelled the initial configuration
+                        if (File.Exists(targetPath))
+                        {
+                            try { File.Delete(targetPath); } catch {}
+                        }
+                        _refWorkbook?.Dispose();
+                        _refWorkbook = null;
+                        RefFilePathText.Text = "Chưa chọn file Excel tham chiếu.";
+                        ChangeSheetsBtn.IsEnabled = false;
+                        SelectedRefSheetText.Text = "Chưa chọn";
+                        SelectedSalesSheetText.Text = "Chưa chọn";
+                    }
+                }
+                catch (IOException)
+                {
+                    MessageBox.Show("Không thể mở file Excel này vì đang được mở ở chương trình khác. Vui lòng đóng file đó lại và thử lại.", "File đang mở", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    HideRefLoading();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Lỗi nạp file Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    HideRefLoading();
+                }
+            }
+        }
+
+        private void LoadRefExcel_Click(object sender, RoutedEventArgs e)
+        {
+            HomeImportFile_Click(sender, e);
+        }
+
+        private async void HomeLoadConfigRow_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is ExcelConfigItem config)
+            {
+                if (!File.Exists(config.LocalPath))
+                {
+                    // Fallback to original path if local copy is missing
+                    if (File.Exists(config.OriginalPath))
+                    {
+                        var result = MessageBox.Show($"Không tìm thấy file bản sao cục bộ tại raw_material. Bạn có muốn phục hồi bằng cách sao chép lại từ đường dẫn gốc '{config.OriginalPath}'?", "Không tìm thấy file", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            try
+                            {
+                                string dir = Path.GetDirectoryName(config.LocalPath) ?? "";
+                                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                                File.Copy(config.OriginalPath, config.LocalPath, true);
+                            }
+                            catch (Exception ex)
+                            {
+                                MessageBox.Show($"Không thể khôi phục file: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                                return;
+                            }
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Tệp Excel không tồn tại ở cả đường dẫn cục bộ và đường dẫn gốc. Vui lòng kiểm tra lại.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                        return;
+                    }
+                }
+
+                ShowRefLoading("Đang nạp file Excel từ bản sao cục bộ...");
+                try
+                {
+                    var workbook = await Task.Run(() => new XLWorkbook(config.LocalPath));
+                    _refWorkbook?.Dispose();
+                    _refWorkbook = workbook;
+                    RefFilePathText.Text = config.LocalPath;
+
+                    SelectedRefSheetText.Text = config.RefSheet;
+                    SelectedSalesSheetText.Text = config.SalesSheet;
+                    ChangeSheetsBtn.IsEnabled = true;
+
+                    // Set active status
+                    SetActiveExcelConfig(config.LocalPath);
+
+                    await LoadBothSheetsAsync(config.RefSheet, config.SalesSheet);
+
+                    // Switch to reference tab
+                    MainTabControl.SelectedIndex = 2;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Lỗi nạp file Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    HideRefLoading();
+                }
+            }
+        }
+
+        private void HomeDeleteConfigRow_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.Tag is ExcelConfigItem config)
+            {
+                var confirm = MessageBox.Show($"Bạn có chắc chắn muốn xóa cấu hình của file '{config.FileName}'?\n\nChú ý: File bản sao tương ứng trong thư mục raw_material cũng sẽ bị xóa bỏ.", "Xác nhận xóa", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                
+                if (confirm == MessageBoxResult.Yes)
+                {
+                    DeleteConfigAndFile(config);
+                    SaveExcelConfigs();
+                }
+            }
+        }
+
+        private void HomeDeleteSelected_Click(object sender, RoutedEventArgs e)
+        {
+            var selectedItems = HomeConfigsGrid.SelectedItems.Cast<ExcelConfigItem>().ToList();
+            if (selectedItems.Count == 0)
+            {
+                MessageBox.Show("Vui lòng chọn ít nhất một cấu hình để xóa.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirm = MessageBox.Show($"Bạn có chắc chắn muốn xóa {selectedItems.Count} cấu hình được chọn?\n\nChú ý: Các file bản sao tương ứng trong thư mục raw_material cũng sẽ bị xóa bỏ hoàn toàn.", "Xác nhận xóa nhiều tệp", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            
+            if (confirm == MessageBoxResult.Yes)
+            {
+                foreach (var config in selectedItems)
+                {
+                    DeleteConfigAndFile(config);
+                }
+                SaveExcelConfigs();
+            }
+        }
+
+        private void DeleteConfigAndFile(ExcelConfigItem config)
+        {
+            // Delete local file
+            if (File.Exists(config.LocalPath))
+            {
+                try
+                {
+                    // If the workbook is currently open, dispose it first so the file is not locked!
+                    if (_refWorkbook != null && RefFilePathText.Text == config.LocalPath)
+                    {
+                        _refWorkbook.Dispose();
+                        _refWorkbook = null;
+                        RefFilePathText.Text = "Chưa chọn file Excel tham chiếu.";
+                        ChangeSheetsBtn.IsEnabled = false;
+                        SelectedRefSheetText.Text = "Chưa chọn";
+                        SelectedSalesSheetText.Text = "Chưa chọn";
+                        _refItems.Clear();
+                        SalesDataGrid.ItemsSource = null;
+                        SetActiveExcelConfig(""); // Reset active states
+                    }
+                    File.Delete(config.LocalPath);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[App] Không thể xóa file cục bộ {config.LocalPath}: {ex.Message}");
+                }
+            }
+
+            _excelConfigs.Remove(config);
+        }
+
+        private async void ChangeSheets_Click(object sender, RoutedEventArgs e)
+        {
+            if (_refWorkbook == null) return;
+            var sheetNames = _refWorkbook.Worksheets.Select(x => x.Name).ToList();
+            var selectorWin = new SheetSelectorWindow(sheetNames) { Owner = this };
+            
+            if (selectorWin.ShowDialog() == true)
+            {
+                string refSheet = selectorWin.SelectedReferenceSheet;
+                string salesSheet = selectorWin.SelectedSalesSheet;
+
+                SelectedRefSheetText.Text = refSheet;
+                SelectedSalesSheetText.Text = salesSheet;
+
+                await LoadBothSheetsAsync(refSheet, salesSheet);
+            }
+        }
+
+        private async Task LoadBothSheetsAsync(string refSheetName, string salesSheetName)
+        {
+            ShowRefLoading("Đang đọc dữ liệu các sheet...");
+
+            try
+            {
+                // Unbind ItemsSource and clear collections to prevent UI rendering overhead
+                RefDataGrid.ItemsSource = null;
+                SalesDataGrid.ItemsSource = null;
+                _refItems.Clear();
+
+                // Run Reference and Sales sheet processing in parallel
+                var refTask = Task.Run(() =>
+                {
+                    var resultList = new List<ReferenceItem>();
+                    var worksheet = _refWorkbook.Worksheet(refSheetName);
+
+                    // Find header row in first 20 rows
+                    int headerRow = -1;
+                    int colAbbrev = -1;
+                    int colName = -1;
+                    int colUnit = -1;
+
+                    for (int r = 1; r <= 20; r++)
+                    {
+                        var row = worksheet.Row(r);
+                        for (int c = 1; c <= 20; c++)
+                        {
+                            string val = row.Cell(c).GetString().Trim().ToLower();
+                            if (val.Contains("viết tắt") || val == "viet tat" || val == "ma" || val == "mã")
+                            {
+                                colAbbrev = c;
+                            }
+                            else if (val.Contains("tên hàng") || val == "ten hang" || val == "sản phẩm" || val == "san pham")
+                            {
+                                colName = c;
+                            }
+                            else if (val.Contains("đơn vị") || val == "don vi" || val == "đvt" || val == "dvt")
+                            {
+                                colUnit = c;
+                            }
+                        }
+
+                        if (colAbbrev != -1 && colName != -1 && colUnit != -1)
+                        {
+                            headerRow = r;
+                            break;
+                        }
+                    }
+
+                    if (headerRow == -1)
+                    {
+                        headerRow = 2; // Default assume row 2
+                        colAbbrev = 1;
+                        colName = 2;
+                        colUnit = 3;
+                    }
+
+                    int lastRow = Math.Min(worksheet.LastRowUsed()?.RowNumber() ?? 1000, headerRow + 1000);
+                    for (int r = headerRow + 1; r <= lastRow; r++)
+                    {
+                        string abbrev = worksheet.Cell(r, colAbbrev).GetString().Trim();
+                        string name = worksheet.Cell(r, colName).GetString().Trim();
+                        string unit = worksheet.Cell(r, colUnit).GetString().Trim();
+
+                        if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(abbrev)) continue;
+
+                        string unitLower = unit.ToLower();
+                        if (unitLower == "kg") continue; // Filter out kg, Kg, KG, kG
+
+                        resultList.Add(new ReferenceItem
+                        {
+                            VietTat = abbrev,
+                            TenHang = name,
+                            DonViTinh = unit
+                        });
+                    }
+                    return resultList;
+                });
+
+                var salesTask = Task.Run(() =>
+                {
+                    var dt = new DataTable();
+                    var worksheet = _refWorkbook.Worksheet(salesSheetName);
+                    var range = worksheet.RangeUsed();
+                    if (range != null)
+                    {
+                        int rowCount = range.RowCount();
+                        int colCount = range.ColumnCount();
+
+                        // Row 1: Headers
+                        var firstRow = range.FirstRow();
+                        for (int col = 1; col <= colCount; col++)
+                        {
+                            string header = firstRow.Cell(col).GetString().Trim();
+                            if (string.IsNullOrEmpty(header))
+                            {
+                                header = XLHelper.GetColumnLetterFromNumber(col);
+                            }
+
+                            string uniqueHeader = header;
+                            int counter = 1;
+                            while (dt.Columns.Contains(uniqueHeader))
+                            {
+                                uniqueHeader = $"{header}_{counter++}";
+                            }
+                            dt.Columns.Add(uniqueHeader);
+                        }
+
+                        // Rows 2 to N
+                        for (int r = 2; r <= rowCount; r++)
+                        {
+                            var row = range.Row(r);
+                            var dr = dt.NewRow();
+                            for (int col = 1; col <= colCount; col++)
+                            {
+                                var cell = row.Cell(col);
+                                var val = cell.HasFormula ? cell.CachedValue : cell.Value;
+                                if (val.Type == XLDataType.DateTime)
+                                {
+                                    var dtValue = val.GetDateTime();
+                                    if (dtValue.TimeOfDay == TimeSpan.Zero)
+                                    {
+                                        dr[col - 1] = dtValue.ToString("dd/MM/yyyy");
+                                    }
+                                    else
+                                    {
+                                        dr[col - 1] = dtValue.ToString("dd/MM/yyyy HH:mm:ss");
+                                    }
+                                }
+                                else
+                                {
+                                    dr[col - 1] = val.ToString();
+                                }
+                            }
+                            dt.Rows.Add(dr);
+                        }
+                    }
+                    return dt;
+                });
+
+                await Task.WhenAll(refTask, salesTask);
+
+                var items = await refTask;
+                foreach (var item in items)
+                {
+                    _refItems.Add(item);
+                }
+
+                var salesDt = await salesTask;
+                SalesDataGrid.ItemsSource = salesDt.DefaultView;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi nạp dữ liệu sheet: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                // Rebind ItemsSource to trigger a single layout render
+                RefDataGrid.ItemsSource = _refItems;
+                HideRefLoading();
             }
         }
     }

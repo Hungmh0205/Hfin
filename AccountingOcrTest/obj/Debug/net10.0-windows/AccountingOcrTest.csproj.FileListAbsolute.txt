@@ -27,3 +27,12 @@ D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\Tesseract.dll
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\Accounti.10F90B5F.Up2Date
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\ApiKeyManagerWindow.baml
 D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\ApiKeyManagerWindow.g.cs
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\ClosedXML.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\ClosedXML.Parser.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\DocumentFormat.OpenXml.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\DocumentFormat.OpenXml.Framework.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\ExcelNumberFormat.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\RBush.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\SixLabors.Fonts.dll
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\SheetSelectorWindow.baml
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\SheetSelectorWindow.g.cs

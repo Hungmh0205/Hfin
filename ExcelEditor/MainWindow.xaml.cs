@@ -79,8 +79,17 @@ namespace ExcelEditor
             if (SheetsListBox.SelectedItem == null) return;
             string sheetName = SheetsListBox.SelectedItem.ToString();
             
-            _currentWorksheet = await Task.Run(() => _workbook.Worksheet(sheetName));
-            await LoadSheetDataAsync();
+            ShowLoading("Loading Worksheet...");
+            try
+            {
+                _currentWorksheet = await Task.Run(() => _workbook.Worksheet(sheetName));
+                await LoadSheetDataAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading worksheet: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                HideLoading();
+            }
         }
 
         private async Task LoadSheetDataAsync()

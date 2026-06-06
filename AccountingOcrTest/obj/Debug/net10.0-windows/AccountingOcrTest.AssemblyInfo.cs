@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AccountingOcrTest")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+883afd8052f69628235489f36f523936682c4b2a")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3716f61debb20afeb093d1b263f403cc0853cccb")]
 [assembly: System.Reflection.AssemblyProductAttribute("AccountingOcrTest")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AccountingOcrTest")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
