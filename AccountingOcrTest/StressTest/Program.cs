@@ -22,6 +22,7 @@ namespace StressTest
         [STAThread]
         static async Task Main(string[] args)
         {
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.WriteLine("=======================================================================");
             Console.WriteLine("        BẮT ĐẦU CHẠY STRESS TEST & BENCHMARK DỰ ÁN ACCOUNTING OCR       ");

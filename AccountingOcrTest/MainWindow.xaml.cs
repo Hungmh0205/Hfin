@@ -525,7 +525,7 @@ namespace AccountingOcrTest
         }
 
         // Fix #7: Resize large images before sending to API (saves bandwidth + latency)
-        private static Bitmap ResizeImageForApi(Bitmap original, int maxWidth = 2000, int maxHeight = 2000)
+        private static Bitmap ResizeImageForApi(Bitmap original, int maxWidth = 3072, int maxHeight = 3072)
         {
             double ratioX = (double)maxWidth / original.Width;
             double ratioY = (double)maxHeight / original.Height;
@@ -629,30 +629,32 @@ namespace AccountingOcrTest
                             img.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
                             using (var pix = Pix.LoadFromMemory(ms.ToArray()))
                             {
-                                using (var page = engine.Process(pix, PageSegMode.OsdOnly))
+                                using (var page = engine.Process(pix, PageSegMode.AutoOsd))
                                 {
-                                    var iterator = page.GetIterator();
-                                    if (iterator != null)
+                                    using (var iterator = page.AnalyseLayout())
                                     {
-                                        iterator.Begin();
-                                        var props = iterator.GetProperties();
-                                        Tesseract.Orientation orientation = props.Orientation;
-                                        Logger.Log($"[Tesseract OSD] Hướng ảnh phát hiện: {orientation}");
+                                        if (iterator != null)
+                                        {
+                                            iterator.Begin();
+                                            var props = iterator.GetProperties();
+                                            Tesseract.Orientation orientation = props.Orientation;
+                                            Logger.Log($"[Tesseract OSD] Hướng ảnh phát hiện: {orientation}");
 
-                                        if (orientation == Tesseract.Orientation.PageRight) 
-                                        {
-                                            img.RotateFlip(RotateFlipType.Rotate270FlipNone);
-                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 270 độ.");
-                                        }
-                                        else if (orientation == Tesseract.Orientation.PageDown) 
-                                        {
-                                            img.RotateFlip(RotateFlipType.Rotate180FlipNone);
-                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 180 độ (lộn ngược).");
-                                        }
-                                        else if (orientation == Tesseract.Orientation.PageLeft) 
-                                        {
-                                            img.RotateFlip(RotateFlipType.Rotate90FlipNone);
-                                            Logger.Log("[Tesseract OSD] Đã xoay ảnh 90 độ.");
+                                            if (orientation == Tesseract.Orientation.PageRight) 
+                                            {
+                                                img.RotateFlip(RotateFlipType.Rotate270FlipNone);
+                                                Logger.Log("[Tesseract OSD] Đã xoay ảnh 270 độ.");
+                                            }
+                                            else if (orientation == Tesseract.Orientation.PageDown) 
+                                            {
+                                                img.RotateFlip(RotateFlipType.Rotate180FlipNone);
+                                                Logger.Log("[Tesseract OSD] Đã xoay ảnh 180 độ (lộn ngược).");
+                                            }
+                                            else if (orientation == Tesseract.Orientation.PageLeft) 
+                                            {
+                                                img.RotateFlip(RotateFlipType.Rotate90FlipNone);
+                                                Logger.Log("[Tesseract OSD] Đã xoay ảnh 90 độ.");
+                                            }
                                         }
                                     }
                                 }
@@ -667,9 +669,9 @@ namespace AccountingOcrTest
 
                 token.ThrowIfCancellationRequested();
 
-                // Fix #7: Resize large images before encoding for API
-                bool needsResize = img.Width > 2000 || img.Height > 2000;
-                Bitmap apiImage = needsResize ? ResizeImageForApi(img) : img;
+                // Fix #7: Resize large images before encoding for API (limit increased to 3072 for visual accuracy of handwritten marks)
+                bool needsResize = img.Width > 3072 || img.Height > 3072;
+                Bitmap apiImage = needsResize ? ResizeImageForApi(img, 3072, 3072) : img;
 
                 try
                 {
@@ -733,6 +735,12 @@ Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Vi�
 - Phân tách rõ ràng giữa mực in máy và mực viết tay (mực màu xanh, đen mờ, đỏ hoặc nét bút viết tay).
 - MỖI DÒNG HÀNG HÓA PHẢI ĐƯỢC PHÂN TÍCH ĐỘC LẬP. Không được suy đoán kết quả dòng này dựa trên dòng khác. Phải có BẰNG CHỨNG THỊ GIÁC CỤ THỂ cho từng dòng.
 - Quét qua từng dòng dữ liệu hàng hóa và áp dụng QUY TẮC theo THỨ TỰ ƯU TIÊN SAU (rule trên THẮNG rule dưới):
+
+  ĐẶC BIỆT CHÚ Ý ĐỐI VỚI HÓA ĐƠN CÓ CỘT ""THỰC NHẬN"" (như hóa đơn GTech/Easymart):
+  - Khi hóa đơn có cột ""THỰC NHẬN"" được kiểm nhận bằng dấu tích:
+    + Những dòng được giao thường sẽ có một dấu tích ""✓"" hoặc số lượng thực nhận viết tay rất rõ ở cột ""THỰC NHẬN"".
+    + Những dòng BỊ HỦY hoặc KHÔNG GIAO thường sẽ BỊ GẠCH NGANG đè lên số lượng in máy (ở cột SL hoặc cột Thành tiền), và cột ""THỰC NHẬN"" của dòng đó sẽ để TRỐNG (không có dấu tick ✓ hay số viết tay).
+    + Bạn phải đối chiếu kỹ lưỡng: nếu một dòng hàng hóa có số lượng xuất in sẵn (sl_xuat > 0) nhưng cột ""THỰC NHẬN"" trống trơn VÀ có bất kỳ nét gạch ngang/gạch chéo nào viết tay đè lên số lượng/đơn giá (kể cả nét gạch cực kỳ mảnh, nằm sát/trùng dòng kẻ bảng), bạn PHẢI xác định dòng đó BỊ HỦY và gán sl_nhan = 0.
 
   ƯU TIÊN CAO NHẤT - Rule A: Dấu tích '✓' kèm con số viết tay rõ ràng (ví dụ: '✓ 05', '✓ 5', '✓ 10'...):
      -> ĐÂY LÀ KÝ HIỆU XÁC NHẬN GIAO THỰC TẾ. -> sl_nhan = <con số viết tay đó>.
@@ -2151,13 +2159,15 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             int intersectCount = 0;
             foreach (var sTok in sourceTokens)
             {
-                if (targetTokens.Any(tTok => tTok == sTok || tTok.Contains(sTok) || sTok.Contains(tTok)))
+                // Fix: only allow substring contains if length >= 3 to avoid matching single-letter words like "e" (from "lá é") with "green" or "rocket"
+                if (targetTokens.Any(tTok => tTok == sTok || (tTok.Length >= 3 && sTok.Length >= 3 && (tTok.Contains(sTok) || sTok.Contains(tTok)))))
                 {
                     intersectCount++;
                 }
             }
 
-            return (double)intersectCount / Math.Max(sourceTokens.Length, targetTokens.Length);
+            // Dice Coefficient: 2 * intersect / (len1 + len2)
+            return (2.0 * intersectCount) / (sourceTokens.Length + targetTokens.Length);
         }
 
         public static double JaroWinklerDistance(string s1, string s2)
@@ -2224,6 +2234,16 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
             string cleanRaw = RemoveSign4VietnameseString(rawName.Trim().ToLower());
 
+            // Default color rules: "cải mơ" / "mizuna" default to green ("xanh") if neither red ("đỏ") nor green ("xanh") is specified
+            if (cleanRaw.Contains("cai mo") && !cleanRaw.Contains("do") && !cleanRaw.Contains("xanh"))
+            {
+                cleanRaw += " xanh";
+            }
+            else if (cleanRaw.Contains("mizuna") && !cleanRaw.Contains("do") && !cleanRaw.Contains("xanh"))
+            {
+                cleanRaw += " xanh";
+            }
+
             foreach (var refItem in refItems)
             {
                 string cleanRef = RemoveSign4VietnameseString(refItem.TenHang.Trim().ToLower());
@@ -2256,6 +2276,16 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             ReferenceItem? bestMatch = null;
 
             string cleanRaw = RemoveSign4VietnameseString(rawName.Trim().ToLower());
+
+            // Default color rules: "cải mơ" / "mizuna" default to green ("xanh") if neither red ("đỏ") nor green ("xanh") is specified
+            if (cleanRaw.Contains("cai mo") && !cleanRaw.Contains("do") && !cleanRaw.Contains("xanh"))
+            {
+                cleanRaw += " xanh";
+            }
+            else if (cleanRaw.Contains("mizuna") && !cleanRaw.Contains("do") && !cleanRaw.Contains("xanh"))
+            {
+                cleanRaw += " xanh";
+            }
 
             foreach (var cached in cachedItems)
             {

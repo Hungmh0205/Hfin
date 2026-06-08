@@ -1,0 +1,31 @@
+# Build outputs and object files
+[Bb]in/
+[Oo]bj/
+
+# Local databases and WAL files
+*.db
+*.db-wal
+*.db-journal
+*.db.wal
+
+# Log files
+*.log
+app.log
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+
+# Excel temporary/lock files
+~$*.xlsx
+~$*.xlsm
+*.bak
+
+# Local raw materials directory (temporary excel files copied locally)
+raw_material/
+
+# API keys containing sensitive data
+apikeys.json
