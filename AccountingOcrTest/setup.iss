@@ -5,7 +5,7 @@
 #define MyAppExeName "AccountingOcrTest.exe"
 
 [Setup]
-AppId={{D8F8F982-FFDE-4E11-9A33-BC7C1D18AF10}
+AppId={D8F8F982-FFDE-4E11-9A33-BC7C1D18AF10}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -27,7 +27,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "bin\Release\net10.0-windows\win-x64\publish\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "bin\Release\net10.0-windows\publish\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
