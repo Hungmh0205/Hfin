@@ -10,9 +10,18 @@
 
   <ItemGroup>
     <PackageReference Include="DuckDB.NET.Data.Full" Version="1.1.2" />
+    <PackageReference Include="ExcelDataReader" Version="3.8.0" />
+    <PackageReference Include="ExcelDataReader.DataSet" Version="3.8.0" />
     <PackageReference Include="System.Drawing.Common" Version="10.0.8" />
     <PackageReference Include="Tesseract" Version="5.2.0" />
     <PackageReference Include="ClosedXML" Version="0.105.0" />
+  </ItemGroup>
+
+  <!-- Exclude nested StressTest folder to prevent duplicate compilation of subproject files -->
+  <ItemGroup>
+    <Compile Remove="StressTest\**" />
+    <EmbeddedResource Remove="StressTest\**" />
+    <None Remove="StressTest\**" />
   </ItemGroup>
 
   <ItemGroup>

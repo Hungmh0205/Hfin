@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "aspf6hQSF4k=",
+  "dgSpecHash": "PqurfJzFmHM=",
   "success": true,
-  "projectFilePath": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
+  "projectFilePath": "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Dell\\.nuget\\packages\\closedxml\\0.105.0\\closedxml.0.105.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\closedxml.parser\\2.0.0\\closedxml.parser.2.0.0.nupkg.sha512",
@@ -10,6 +10,8 @@
     "C:\\Users\\Dell\\.nuget\\packages\\documentformat.openxml.framework\\3.1.1\\documentformat.openxml.framework.3.1.1.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\duckdb.net.bindings.full\\1.1.2\\duckdb.net.bindings.full.1.1.2.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\duckdb.net.data.full\\1.1.2\\duckdb.net.data.full.1.1.2.nupkg.sha512",
+    "C:\\Users\\Dell\\.nuget\\packages\\exceldatareader\\3.8.0\\exceldatareader.3.8.0.nupkg.sha512",
+    "C:\\Users\\Dell\\.nuget\\packages\\exceldatareader.dataset\\3.8.0\\exceldatareader.dataset.3.8.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\excelnumberformat\\1.1.0\\excelnumberformat.1.1.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\rbush.signed\\4.0.0\\rbush.signed.4.0.0.nupkg.sha512",
     "C:\\Users\\Dell\\.nuget\\packages\\sixlabors.fonts\\1.0.0\\sixlabors.fonts.1.0.0.nupkg.sha512",
@@ -21,9 +23,9 @@
       "code": "NU1510",
       "level": "Warning",
       "message": "PackageReference System.Drawing.Common will not be pruned. Consider removing this package from your dependencies, as it is likely unnecessary.",
-      "projectPath": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
+      "projectPath": "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
       "warningLevel": 1,
-      "filePath": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
+      "filePath": "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
       "libraryId": "System.Drawing.Common",
       "targetGraphs": [
         "net10.0-windows7.0"

@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj": {}
+    "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj": {}
   },
   "projects": {
-    "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj": {
+    "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
+        "projectUniqueName": "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
         "projectName": "AccountingOcrTest",
-        "projectPath": "D:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
+        "projectPath": "d:\\Excel\\AccountingOcrTest\\AccountingOcrTest.csproj",
         "packagesPath": "C:\\Users\\Dell\\.nuget\\packages\\",
-        "outputPath": "D:\\Excel\\AccountingOcrTest\\obj\\",
+        "outputPath": "d:\\Excel\\AccountingOcrTest\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -59,6 +59,14 @@
             "DuckDB.NET.Data.Full": {
               "target": "Package",
               "version": "[1.1.2, )"
+            },
+            "ExcelDataReader": {
+              "target": "Package",
+              "version": "[3.8.0, )"
+            },
+            "ExcelDataReader.DataSet": {
+              "target": "Package",
+              "version": "[3.8.0, )"
             },
             "System.Drawing.Common": {
               "target": "Package",

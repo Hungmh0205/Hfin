@@ -233,6 +233,13 @@ namespace AccountingOcrTest
         public string DonViTinh { get; set; } = string.Empty;
     }
 
+    public class CachedRefInfo
+    {
+        public ReferenceItem Item { get; set; } = new ReferenceItem();
+        public string CleanTenHang { get; set; } = string.Empty;
+        public string CleanVietTat { get; set; } = string.Empty;
+    }
+
     public class ExcelConfigItem : INotifyPropertyChanged
     {
         private bool _isActive;
@@ -286,6 +293,7 @@ namespace AccountingOcrTest
         private double _slHong;
         private string _ghiChu = "";
         private bool _isSelected = true;
+        private double _matchScore = 1.0;
 
         public string Id { get => _id; set { _id = value; OnPropertyChanged(); } }
         public string FileName { get => _fileName; set { _fileName = value; OnPropertyChanged(); } }
@@ -320,6 +328,7 @@ namespace AccountingOcrTest
         public double SlHong { get => _slHong; set { _slHong = value; OnPropertyChanged(); } }
         public string GhiChu { get => _ghiChu; set { _ghiChu = value; OnPropertyChanged(); } }
         public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(); } }
+        public double MatchScore { get => _matchScore; set { _matchScore = value; OnPropertyChanged(); } }
 
         private void RecalculateHong()
         {

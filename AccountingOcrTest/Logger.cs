@@ -11,6 +11,7 @@ namespace AccountingOcrTest
         private static readonly string LogFile = "app.log";
         private static readonly ConcurrentQueue<string> _logQueue = new ConcurrentQueue<string>();
         private static readonly Timer _flushTimer;
+        private static readonly object LogWriteLock = new object();
 
         static Logger()
         {
@@ -30,19 +31,44 @@ namespace AccountingOcrTest
 
         private static void FlushLogs(object? state)
         {
-            try
+            lock (LogWriteLock)
             {
-                var sb = new StringBuilder();
-                while (_logQueue.TryDequeue(out var msg))
+                try
                 {
-                    sb.AppendLine(msg);
+                    var sb = new StringBuilder();
+                    while (_logQueue.TryDequeue(out var msg))
+                    {
+                        sb.AppendLine(msg);
+                    }
+                    if (sb.Length > 0)
+                    {
+                        try
+                        {
+                            if (File.Exists(LogFile))
+                            {
+                                var info = new FileInfo(LogFile);
+                                if (info.Length > 10 * 1024 * 1024) // 10MB limit
+                                {
+                                    string archiveFile = "app_old.log";
+                                    if (File.Exists(archiveFile))
+                                    {
+                                        File.Delete(archiveFile);
+                                    }
+                                    File.Move(LogFile, archiveFile);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // If move fails, try truncating the file to release space
+                            try { File.WriteAllText(LogFile, string.Empty); } catch { }
+                        }
+
+                        File.AppendAllText(LogFile, sb.ToString());
+                    }
                 }
-                if (sb.Length > 0)
-                {
-                    File.AppendAllText(LogFile, sb.ToString());
-                }
+                catch { }
             }
-            catch { }
         }
     }
 }

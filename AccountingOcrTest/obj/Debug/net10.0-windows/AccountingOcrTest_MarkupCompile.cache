@@ -4,16 +4,16 @@
 winexe
 C#
 .cs
-D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\
+d:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\
 AccountingOcrTest
 none
 false
 TRACE;DEBUG;NET;NET10_0;NETCOREAPP;WINDOWS;WINDOWS7_0;NET5_0_OR_GREATER;NET6_0_OR_GREATER;NET7_0_OR_GREATER;NET8_0_OR_GREATER;NET9_0_OR_GREATER;NET10_0_OR_GREATER;NETCOREAPP3_0_OR_GREATER;NETCOREAPP3_1_OR_GREATER;WINDOWS7_0_OR_GREATER
-D:\Excel\AccountingOcrTest\App.xaml
+d:\Excel\AccountingOcrTest\App.xaml
 3183865452
 
 9-1337696503
-216-1835435059
+218-449921397
 ApiKeyManagerWindow.xaml;MainWindow.xaml;SheetSelectorWindow.xaml;
 
 False

@@ -17,9 +17,11 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 using Tesseract;
 using ClosedXML.Excel;
 using DuckDB.NET.Data;
+using ExcelDataReader;
 
 namespace AccountingOcrTest
 {
@@ -29,12 +31,17 @@ namespace AccountingOcrTest
         private ObservableCollection<ProcessingItem> _items = new ObservableCollection<ProcessingItem>();
         private ICollectionView _itemsView;
         private CancellationTokenSource _cts;
+
+        // Zoom/Pan state fields
+        private System.Windows.Point _panStartPoint;
+        private double _panStartX;
+        private double _panStartY;
+        private bool _isPanning = false;
         
         private static readonly string ShippersFilePath = "shippers.json";
         private ObservableCollection<string> _shippers = new ObservableCollection<string>();
 
         // Reference excel fields
-        private XLWorkbook? _refWorkbook;
         private ObservableCollection<ReferenceItem> _refItems = new ObservableCollection<ReferenceItem>();
 
         // Configs and internal copy fields
@@ -67,10 +74,11 @@ namespace AccountingOcrTest
             {
                 try { return new TesseractEngine(_tessDataPath, "osd", EngineMode.Default); }
                 catch { return null; }
-            });
+            }, trackAllValues: true);
 
         public MainWindow()
         {
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
             InitializeComponent();
             this.Closing += MainWindow_Closing;
             _apiKeyManager = new ApiKeyManager();
@@ -162,6 +170,15 @@ namespace AccountingOcrTest
         // Fix #1: Async image loading with DecodePixelWidth to prevent UI freeze
         private async void ItemsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            // Reset zoom/pan transform on selecting a different item
+            if (ImageScaleTransform != null && ImageTranslateTransform != null)
+            {
+                ImageScaleTransform.ScaleX = 1.0;
+                ImageScaleTransform.ScaleY = 1.0;
+                ImageTranslateTransform.X = 0.0;
+                ImageTranslateTransform.Y = 0.0;
+            }
+
             if (ItemsListBox.SelectedItem is ProcessingItem item)
             {
                 // Update Preview Image — decode on background thread with size limit
@@ -190,6 +207,76 @@ namespace AccountingOcrTest
             else
             {
                 PreviewImage.Source = null;
+            }
+        }
+
+        private void PreviewImage_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (PreviewImage.Source == null) return;
+            
+            System.Windows.Point relative = e.GetPosition(PreviewImage);
+            double zoom = e.Delta > 0 ? 1.1 : 0.9;
+            
+            if (zoom > 1.0 && ImageScaleTransform.ScaleX >= 15.0) return;
+            if (zoom < 1.0 && ImageScaleTransform.ScaleX <= 0.2) return;
+
+            double oldScaleX = ImageScaleTransform.ScaleX;
+            double oldScaleY = ImageScaleTransform.ScaleY;
+            
+            ImageScaleTransform.ScaleX *= zoom;
+            ImageScaleTransform.ScaleY *= zoom;
+
+            ImageTranslateTransform.X -= (relative.X * ImageScaleTransform.ScaleX - relative.X * oldScaleX);
+            ImageTranslateTransform.Y -= (relative.Y * ImageScaleTransform.ScaleY - relative.Y * oldScaleY);
+        }
+
+        private void PreviewImage_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (PreviewImage.Source == null) return;
+
+            if (e.ChangedButton == MouseButton.Left)
+            {
+                if (e.ClickCount == 2)
+                {
+                    ImageScaleTransform.ScaleX = 1.0;
+                    ImageScaleTransform.ScaleY = 1.0;
+                    ImageTranslateTransform.X = 0.0;
+                    ImageTranslateTransform.Y = 0.0;
+                    return;
+                }
+
+                var element = sender as UIElement;
+                if (element != null)
+                {
+                    _panStartPoint = e.GetPosition(ImageParentGrid);
+                    _panStartX = ImageTranslateTransform.X;
+                    _panStartY = ImageTranslateTransform.Y;
+                    _isPanning = true;
+                    element.CaptureMouse();
+                }
+            }
+        }
+
+        private void PreviewImage_MouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+            {
+                _isPanning = false;
+                (sender as UIElement)?.ReleaseMouseCapture();
+            }
+        }
+
+        private void PreviewImage_MouseMove(object sender, MouseEventArgs e)
+        {
+            var element = sender as UIElement;
+            if (_isPanning && element != null && element.IsMouseCaptured)
+            {
+                System.Windows.Point currentPoint = e.GetPosition(ImageParentGrid);
+                double deltaX = currentPoint.X - _panStartPoint.X;
+                double deltaY = currentPoint.Y - _panStartPoint.Y;
+
+                ImageTranslateTransform.X = _panStartX + deltaX;
+                ImageTranslateTransform.Y = _panStartY + deltaY;
             }
         }
 
@@ -231,149 +318,158 @@ namespace AccountingOcrTest
             _cts?.Dispose();
             _cts = new CancellationTokenSource();
 
-            string selectedModel = "gemini-3.5-flash";
-            if (ModelSelector.SelectedItem is ComboBoxItem comboItem)
+            ToggleUiLock(true);
+
+            try
             {
-                selectedModel = comboItem.Content.ToString();
-            }
-
-            int concurrencyLevel = Math.Min(waitingItems.Count, _apiKeyManager.Keys.Count * 2);
-            if (concurrencyLevel == 0) concurrencyLevel = 1; // Fallback nếu không có key
-
-            int total = waitingItems.Count;
-            int completed = 0;
-
-            // Fix #10: Show progress indicator
-            ProgressBar.Visibility = Visibility.Visible;
-            ProgressText.Visibility = Visibility.Visible;
-            ProgressBar.Maximum = total;
-            ProgressBar.Value = 0;
-            ProgressText.Text = $"0/{total}";
-
-            Logger.Log($"[Bắt đầu] Đang xử lý {total} hóa đơn bằng {selectedModel} với {concurrencyLevel} luồng...");
-
-            var tasks = new List<Task>();
-            var queue = new ConcurrentQueue<ProcessingItem>(waitingItems);
-
-            for (int i = 0; i < concurrencyLevel; i++)
-            {
-                tasks.Add(Task.Run(async () =>
+                string selectedModel = "gemini-3.5-flash";
+                if (ModelSelector.SelectedItem is ComboBoxItem comboItem)
                 {
-                    while (queue.TryDequeue(out var item))
+                    selectedModel = comboItem.Content.ToString();
+                }
+
+                int concurrencyLevel = Math.Min(waitingItems.Count, _apiKeyManager.Keys.Count * 2);
+                if (concurrencyLevel == 0) concurrencyLevel = 1; // Fallback nếu không có key
+
+                int total = waitingItems.Count;
+                int completed = 0;
+
+                // Fix #10: Show progress indicator
+                ProgressBar.Visibility = Visibility.Visible;
+                ProgressText.Visibility = Visibility.Visible;
+                ProgressBar.Maximum = total;
+                ProgressBar.Value = 0;
+                ProgressText.Text = $"0/{total}";
+
+                Logger.Log($"[Bắt đầu] Đang xử lý {total} hóa đơn bằng {selectedModel} với {concurrencyLevel} luồng...");
+
+                var tasks = new List<Task>();
+                var queue = new ConcurrentQueue<ProcessingItem>(waitingItems);
+
+                for (int i = 0; i < concurrencyLevel; i++)
+                {
+                    tasks.Add(Task.Run(async () =>
                     {
-                        if (_cts.Token.IsCancellationRequested) break;
-
-                        // Fix #2: All property changes dispatched to UI thread
-                        Application.Current.Dispatcher.Invoke(() =>
+                        while (queue.TryDequeue(out var item))
                         {
-                            item.Status = ProcessStatus.Processing;
-                        });
-                        Logger.Log($"[Tiến trình] Bắt đầu xử lý file: {item.FilePath}");
-                        
-                        try
-                        {
-                            int maxRetries = 3;
-                            int retryCount = 0;
-                            bool success = false;
-                            string lastErrorMessage = "";
+                            if (_cts.Token.IsCancellationRequested) break;
 
-                            while (retryCount < maxRetries && !success && !_cts.Token.IsCancellationRequested)
+                            // Fix #2: All property changes dispatched to UI thread
+                            Application.Current.Dispatcher.Invoke(() =>
                             {
-                                string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
-                                try
+                                item.Status = ProcessStatus.Processing;
+                            });
+                            Logger.Log($"[Tiến trình] Bắt đầu xử lý file: {item.FilePath}");
+                            
+                            try
+                            {
+                                int maxRetries = 3;
+                                int retryCount = 0;
+                                bool success = false;
+                                string lastErrorMessage = "";
+
+                                while (retryCount < maxRetries && !success && !_cts.Token.IsCancellationRequested)
                                 {
-                                    await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
-                                    success = true;
+                                    string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
+                                    try
+                                    {
+                                        await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
+                                        success = true;
+                                    }
+                                    catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
+                                    {
+                                        retryCount++;
+                                        lastErrorMessage = ex.Message;
+                                        
+                                        string errText = ex.Message.ToLower();
+                                        if (errText.Contains("429") || errText.Contains("toomanyrequests") || errText.Contains("quota"))
+                                        {
+                                            _apiKeyManager.MarkKeyAsRateLimited(apiKey);
+                                            Logger.Log($"[RateLimit] Key {apiKey.Substring(0, 5)}... gặp lỗi giới hạn lượt dùng. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                        }
+                                        else if (errText.Contains("invalid") || errText.Contains("403") || errText.Contains("bad request") || errText.Contains("400"))
+                                        {
+                                            _apiKeyManager.MarkKeyAsError(apiKey);
+                                            Logger.Log($"[ApiKeyError] Key {apiKey.Substring(0, 5)}... gặp lỗi xác thực/cú pháp. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                        }
+                                        else
+                                        {
+                                            _apiKeyManager.MarkKeyAsError(apiKey);
+                                            Logger.Log($"[APIError] Key {apiKey.Substring(0, 5)}... gặp lỗi kết nối: {ex.Message}. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                        }
+
+                                        if (retryCount < maxRetries)
+                                        {
+                                            await Task.Delay(1500, _cts.Token);
+                                        }
+                                    }
                                 }
-                                catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
+
+                                if (!success)
                                 {
-                                    retryCount++;
-                                    lastErrorMessage = ex.Message;
-                                    
-                                    string errText = ex.Message.ToLower();
-                                    if (errText.Contains("429") || errText.Contains("toomanyrequests") || errText.Contains("quota"))
-                                    {
-                                        _apiKeyManager.MarkKeyAsRateLimited(apiKey);
-                                        Logger.Log($"[RateLimit] Key {apiKey.Substring(0, 5)}... gặp lỗi giới hạn lượt dùng. Thử lại lần {retryCount}/{maxRetries} với key khác...");
-                                    }
-                                    else if (errText.Contains("invalid") || errText.Contains("403") || errText.Contains("bad request") || errText.Contains("400"))
-                                    {
-                                        _apiKeyManager.MarkKeyAsError(apiKey);
-                                        Logger.Log($"[ApiKeyError] Key {apiKey.Substring(0, 5)}... gặp lỗi xác thực/cú pháp. Thử lại lần {retryCount}/{maxRetries} với key khác...");
-                                    }
-                                    else
-                                    {
-                                        _apiKeyManager.MarkKeyAsError(apiKey);
-                                        Logger.Log($"[APIError] Key {apiKey.Substring(0, 5)}... gặp lỗi kết nối: {ex.Message}. Thử lại lần {retryCount}/{maxRetries} với key khác...");
-                                    }
-
-                                    if (retryCount < maxRetries)
-                                    {
-                                        await Task.Delay(1500, _cts.Token);
-                                    }
+                                    throw new Exception(lastErrorMessage);
                                 }
+
+                                int current = Interlocked.Increment(ref completed);
+
+                                // Fix #2: Update all properties on UI thread
+                                Application.Current.Dispatcher.Invoke(() =>
+                                {
+                                    item.Status = ProcessStatus.Success;
+                                    if (item.Data != null)
+                                        item.SmartName = $"[{item.Data.ten_nguoi_giao}] - {item.Data.ngay_giao} - {item.Data.khach_hang} - {item.Data.diem_giao}";
+
+                                    // Update progress
+                                    ProgressBar.Value = current;
+                                    ProgressText.Text = $"{current}/{total}";
+                                    // WPF data binding automatically updates the UI
+                                });
+
+                                Logger.Log($"[Thành công] Đã trích xuất xong: {item.FilePath} -> {item.SmartName}");
                             }
-
-                            if (!success)
+                            catch (OperationCanceledException)
                             {
-                                throw new Exception(lastErrorMessage);
+                                // Reset item back to Waiting so user can re-run
+                                Application.Current.Dispatcher.Invoke(() =>
+                                {
+                                    item.Status = ProcessStatus.Waiting;
+                                });
+                                Logger.Log($"[Hủy] Đã hủy xử lý file: {item.FilePath}");
+                                break;
                             }
-
-                            int current = Interlocked.Increment(ref completed);
-
-                            // Fix #2: Update all properties on UI thread
-                            Application.Current.Dispatcher.Invoke(() =>
+                            catch (Exception ex)
                             {
-                                item.Status = ProcessStatus.Success;
-                                if (item.Data != null)
-                                    item.SmartName = $"[{item.Data.ten_nguoi_giao}] - {item.Data.ngay_giao} - {item.Data.khach_hang} - {item.Data.diem_giao}";
+                                int current = Interlocked.Increment(ref completed);
 
-                                // Update progress
-                                ProgressBar.Value = current;
-                                ProgressText.Text = $"{current}/{total}";
-                                // WPF data binding automatically updates the UI
-                            });
+                                Application.Current.Dispatcher.Invoke(() =>
+                                {
+                                    item.Status = ProcessStatus.Error;
+                                    item.ErrorMessage = ex.Message;
+                                    ProgressBar.Value = current;
+                                    ProgressText.Text = $"{current}/{total}";
+                                });
+                                Logger.Log($"[Lỗi] Lỗi khi xử lý file {item.FilePath}: {ex.ToString()}");
+                            }
+                        }
+                    }));
+                }
 
-                            Logger.Log($"[Thành công] Đã trích xuất xong: {item.FilePath} -> {item.SmartName}");
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            // Reset item back to Waiting so user can re-run
-                            Application.Current.Dispatcher.Invoke(() =>
-                            {
-                                item.Status = ProcessStatus.Waiting;
-                            });
-                            Logger.Log($"[Hủy] Đã hủy xử lý file: {item.FilePath}");
-                            break;
-                        }
-                        catch (Exception ex)
-                        {
-                            int current = Interlocked.Increment(ref completed);
-
-                            Application.Current.Dispatcher.Invoke(() =>
-                            {
-                                item.Status = ProcessStatus.Error;
-                                item.ErrorMessage = ex.Message;
-                                ProgressBar.Value = current;
-                                ProgressText.Text = $"{current}/{total}";
-                            });
-                            Logger.Log($"[Lỗi] Lỗi khi xử lý file {item.FilePath}: {ex.ToString()}");
-                        }
-                    }
-                }));
+                await Task.WhenAll(tasks);
             }
+            finally
+            {
+                // Flush buffered logs before showing completion message
+                Logger.Flush();
 
-            await Task.WhenAll(tasks);
+                // UI state: done
+                StartBtn.IsEnabled = true;
+                StartBtn.Content = "▶ Bắt đầu xử lý";
+                CancelBtn.Visibility = Visibility.Collapsed;
+                ProgressBar.Visibility = Visibility.Collapsed;
+                ProgressText.Visibility = Visibility.Collapsed;
 
-            // Flush buffered logs before showing completion message
-            Logger.Flush();
-
-            // UI state: done
-            StartBtn.IsEnabled = true;
-            StartBtn.Content = "▶ Bắt đầu xử lý";
-            CancelBtn.Visibility = Visibility.Collapsed;
-            ProgressBar.Visibility = Visibility.Collapsed;
-            ProgressText.Visibility = Visibility.Collapsed;
+                ToggleUiLock(false);
+            }
 
             if (_cts.Token.IsCancellationRequested)
             {
@@ -386,6 +482,37 @@ namespace AccountingOcrTest
                     ContinueBtn.Visibility = Visibility.Visible;
                 }
                 MessageBox.Show("Đã hoàn tất xử lý danh sách hóa đơn!", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        private void ToggleUiLock(bool lockUi)
+        {
+            // Lock/unlock other tab items
+            for (int i = 0; i < MainTabControl.Items.Count; i++)
+            {
+                if (MainTabControl.Items[i] is TabItem tabItem)
+                {
+                    if (i != MainTabControl.SelectedIndex)
+                    {
+                        tabItem.IsEnabled = !lockUi;
+                    }
+                }
+            }
+
+            // Lock/unlock controls in the active tab (Xử lý OCR)
+            SettingsBtn.IsEnabled = !lockUi;
+            AddImagesBtn.IsEnabled = !lockUi;
+            ShipperSelector.IsEnabled = !lockUi;
+            ModelSelector.IsEnabled = !lockUi;
+            NewSessionBtn.IsEnabled = !lockUi;
+            StartBtn.IsEnabled = !lockUi;
+            ContinueBtn.IsEnabled = !lockUi;
+            SearchBox.IsEnabled = !lockUi;
+            ItemsListBox.IsEnabled = !lockUi;
+
+            if (lockUi)
+            {
+                CancelBtn.IsEnabled = true;
             }
         }
 
@@ -576,12 +703,17 @@ namespace AccountingOcrTest
             }
         }
 
-        private async Task<InvoiceData> CallGeminiApi(string base64Image, string mimeType, string apiKey, string modelName, CancellationToken token)
+        public static async Task<InvoiceData> CallGeminiApi(string base64Image, string mimeType, string apiKey, string modelName, CancellationToken token)
         {
             string promptText = @"Bạn là một hệ thống OCR và kiểm toán kế toán cao cấp chuyên nghiệp của Việt Nam. Nhiệm vụ của bạn là số hóa hóa đơn này với ĐỘ CHÍNH XÁC TUYỆT ĐỐI về mặt cấu trúc và nội dung. ĐẶC BIỆT CHÚ Ý: Hình ảnh có thể bị xoay ngang, xoay dọc, hoặc lộn ngược. Hãy tự động 'xoay' và định hướng lại hình ảnh trong tư duy trước khi đọc. TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ SÓT BẤT KỲ DÒNG HÀNG HÓA NÀO. Hãy dóng hàng ngang thật cẩn thận để đảm bảo Tên hàng hóa và Số lượng khớp nhau 100%, không bị trôi dòng, lệch dòng hay mất dòng.
 
 HÃY THỰC HIỆN QUY TRÌNH SUY LUẬN (CHAIN OF THOUGHT):
-BẮT BUỘC ghi toàn bộ quá trình phân tích của bạn vào trường `quy_trinh_suy_luan` trong file JSON. Đối với phần hàng hóa, hãy phân tích TỪNG DÒNG một cách tường minh, ví dụ: 'Dòng X: bị một đường kẻ dọc/chéo dài cắt qua cột Đơn giá/ĐVT -> Hủy -> sl_nhan = 0', 'Dòng Y: có nét viết tay số 2 -> sl_nhan = 2'. NẾU CÓ MỘT ĐƯỜNG KẺ DÀI KÉO TỪ DÒNG TRÊN XUỐNG DÒNG DƯỚI, BẠN PHẢI GHI NHẬN LÀ TẤT CẢ CÁC DÒNG ĐÓ ĐỀU BỊ GẠCH BỎ.
+BẮT BUỘC ghi toàn bộ quá trình phân tích của bạn vào trường `quy_trinh_suy_luan` trong file JSON. Đối với phần hàng hóa, bạn phải phân tích TỪNG DÒNG từ trên xuống dưới một cách tường minh, ghi rõ kết quả kiểm tra trực quan cho từng dòng:
+- Dòng đó có nét bút viết tay nào (màu xanh, màu đen, hoặc đỏ) vẽ ngang, vẽ chéo, hoặc gạch bỏ đè lên các con số (ở cột SL, Đơn giá, hoặc Thành tiền) hay không? (Lưu ý kiểm tra kỹ xem nét vẽ tay có nằm sát sạt hoặc trùng vào dòng kẻ ngang in sẵn của bảng hay không).
+- Dòng đó có dấu tick '✓' hay con số viết tay nào xác nhận số lượng nhận hay không?
+Ví dụ ghi chi tiết: 'Dòng 1 (Mầm cải củ trắng): có nét bút gạch ngang đè lên các con số 3 và 36.000 -> Bị hủy -> sl_nhan = 0', 'Dòng 2 (Mầm cải củ đỏ): có dấu tick viết tay ở cột Thực Nhận -> sl_nhan = 2', 'Dòng 3 (Mầm cải ngọt): có nét bút gạch ngang viết tay đè lên số 2 và 28.000 (nằm sát dòng kẻ bảng) -> Bị hủy -> sl_nhan = 0'.
+NẾU CÓ MỘT ĐƯỜNG KẺ DÀI KÉO TỪ DÒNG TRÊN XUỐNG DÒNG DƯỚI, BẠN PHẢI GHI NHẬN LÀ TẤT CẢ CÁC DÒNG ĐÓ ĐỀU BỊ GẠCH BỎ.
+
 
 Bước 1: Phân tích Cấu trúc Bảng và Thông tin chung
 - Ngày giao (ngay_giao): Tìm ngày giao/nhận hàng thực tế (Delivery Date / Date Received). TUYỆT ĐỐI BỎ QUA 'Ngày In' (Printed Date / Ngày In / Printed Time, ví dụ: 2026-03-24) và 'Ngày Đặt Hàng' (Order Date).
@@ -608,6 +740,7 @@ Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Vi�
 
   ƯU TIÊN 2 - Rule B: Đường gạch bỏ / hủy giao. BẤT KỲ đường chữ 'Z', nét gạch chéo 'X', nét gạch ngang '-', nét gạch chéo '/', nét kẻ dọc '|', nét mũi tên (->), hoặc đường gạch tay chéo dài. Nét gạch CÓ THỂ vắt qua cột ĐVT, Đơn giá, hoặc Thành tiền. Chỉ cần TRÊN DÒNG ĐÓ bị nét mực gạch xuyên qua VÀ KHÔNG CÓ dấu ✓ kèm số:
      -> sl_nhan = 0.
+     ĐẶC BIỆT CẢNH BÁO ĐƯỜNG KẺ NGANG TRÙNG DÒNG KẺ BẢNG: Một kiểu gạch hủy dòng phổ biến là vẽ một nét bút mực nằm ngang kéo dài cắt qua các con số ở cột Số lượng (SL), Thực Nhận, Đơn Giá và Thành Tiền (ví dụ: dòng STT 1 'Mầm cải củ trắng' và dòng STT 3 'Mầm cải ngọt' đều có một nét bút kẻ ngang đè lên các con số số lượng, đơn giá và thành tiền của dòng đó). Nét gạch ngang viết tay này có thể nằm sát hoặc trùng với dòng kẻ bảng in sẵn. Hãy kiểm tra thật kỹ các chữ số này, nếu thấy có nét mực viết tay nằm đè lên hoặc cắt ngang qua các con số đó (ngay cả khi nét vẽ rất mảnh hoặc gần trùng dòng kẻ bảng), bạn BẮT BUỘC phải xác định đó là dòng BỊ HỦY BỎ và đặt sl_nhan = 0.
      CẢNH BÁO CỰC KỲ QUAN TRỌNG VỀ PHẠM VI ĐƯỜNG KẺ: Khi thấy một đường gạch chéo dài, bạn phải XÁC NHẬN CHÍNH XÁC BẰNG THỊ GIÁC rằng đường đó THỰC SỰ ĐI QUA dòng nào. TUYỆT ĐỐI KHÔNG ĐƯỢC SUY ĐOÁN hoặc NGOẠI SUY rằng đường kẻ kéo dài hơn thực tế. Ví dụ: nếu đường kẻ kết thúc tại dòng 100 thì KHÔNG ĐƯỢC gán sl_nhan=0 cho dòng 110, 120, 130. Chỉ những dòng mà mắt thường nhìn thấy có nét mực ĐI XUYÊN QUA mới được đánh dấu hủy.
      ĐẶC BIỆT CHÚ Ý VỚI KÝ HIỆU HỦY VIẾT TAY: Các đường vẽ tay có hình dạng gạch ngang ngắn '-', gạch lượn sóng '~', nét gạch ngang mờ hoặc nét viết tay vẽ ngang/chéo nằm ở cột checkbox/kiểm nhận của dòng (mà không đi kèm số hay dấu tick nào) đều được tính là gạch hủy dòng đó -> sl_nhan = 0.
      LƯU Ý VỀ VỊ TRÍ NÉT MỰC: Nét gạch hủy (đường gạch ngang '-', gạch sóng '~', nét gạch chéo '/') thường chỉ được ký hiệu ngắn gọn ở cột 'Số lượng' hoặc phần khoảng trống kiểm hàng bên trái số lượng, chứ không nhất thiết phải gạch ngang qua toàn bộ tên mặt hàng hay đơn giá. Chỉ cần có bất kỳ nét gạch ngắn, nét gạch chéo hoặc ký hiệu hủy viết tay nào tương tự xuất hiện trên dòng đó (kể cả chỉ ở cột Số lượng hay cột Stt), và không có dấu tick xác nhận nhận hàng, thì bắt buộc phải ghi nhận dòng đó đã bị hủy -> sl_nhan = 0.
@@ -775,6 +908,9 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private void LoadExcelConfigs()
         {
+            string backupPath = ConfigsFilePath + ".bak";
+            bool loadedSuccessfully = false;
+
             if (File.Exists(ConfigsFilePath))
             {
                 try
@@ -785,11 +921,35 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     {
                         _excelConfigs.Clear();
                         foreach (var item in list) _excelConfigs.Add(item);
+                        loadedSuccessfully = true;
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log($"[App] Lỗi tải file excel_configs.json: {ex.Message}");
+                    Logger.Log($"[App] Lỗi tải file excel_configs.json (Thử khôi phục từ backup): {ex.Message}");
+                }
+            }
+
+            if (!loadedSuccessfully && File.Exists(backupPath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(backupPath);
+                    var list = JsonSerializer.Deserialize<List<ExcelConfigItem>>(json);
+                    if (list != null)
+                    {
+                        _excelConfigs.Clear();
+                        foreach (var item in list) _excelConfigs.Add(item);
+
+                        // Heal the primary file by writing the recovered config back to it
+                        File.WriteAllText(ConfigsFilePath, json);
+                        Logger.Log("[App] Đã phục hồi thành công file excel_configs.json từ tệp dự phòng (.bak).");
+                        loadedSuccessfully = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[App] Lỗi tải file backup excel_configs.json.bak: {ex.Message}");
                 }
             }
         }
@@ -800,6 +960,14 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             {
                 string json = JsonSerializer.Serialize(_excelConfigs.ToList(), new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(ConfigsFilePath, json);
+
+                // Write backup copy
+                try
+                {
+                    string backupPath = ConfigsFilePath + ".bak";
+                    File.WriteAllText(backupPath, json);
+                }
+                catch { }
             }
             catch (Exception ex)
             {
@@ -817,7 +985,9 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
         private void HideRefLoading()
         {
             RefLoadingOverlay.Visibility = Visibility.Collapsed;
-            ChangeSheetsBtn.IsEnabled = _refWorkbook != null;
+            ChangeSheetsBtn.IsEnabled = !string.IsNullOrEmpty(RefFilePathText.Text) && 
+                                        RefFilePathText.Text != "Chưa chọn file Excel tham chiếu." && 
+                                        File.Exists(RefFilePathText.Text);
         }
 
         private void SetActiveExcelConfig(string localPath)
@@ -868,13 +1038,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
                     // Now load and configure
                     ShowRefLoading("Đang nạp file Excel...");
-                    var workbook = await Task.Run(() => new XLWorkbook(targetPath));
-
-                    _refWorkbook?.Dispose();
-                    _refWorkbook = workbook;
+                    var sheetNames = await Task.Run(() => GetSheetNames(targetPath));
                     RefFilePathText.Text = targetPath;
-
-                    var sheetNames = _refWorkbook.Worksheets.Select(x => x.Name).ToList();
                     HideRefLoading();
 
                     var selectorWin = new SheetSelectorWindow(sheetNames) { Owner = this };
@@ -924,8 +1089,6 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         {
                             try { File.Delete(targetPath); } catch {}
                         }
-                        _refWorkbook?.Dispose();
-                        _refWorkbook = null;
                         RefFilePathText.Text = "Chưa chọn file Excel tham chiếu.";
                         ChangeSheetsBtn.IsEnabled = false;
                         SelectedRefSheetText.Text = "Chưa chọn";
@@ -989,9 +1152,6 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 ShowRefLoading("Đang nạp file Excel từ bản sao cục bộ...");
                 try
                 {
-                    var workbook = await Task.Run(() => new XLWorkbook(config.LocalPath));
-                    _refWorkbook?.Dispose();
-                    _refWorkbook = workbook;
                     RefFilePathText.Text = config.LocalPath;
 
                     SelectedRefSheetText.Text = config.RefSheet;
@@ -1056,11 +1216,9 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             {
                 try
                 {
-                    // If the workbook is currently open, dispose it first so the file is not locked!
-                    if (_refWorkbook != null && RefFilePathText.Text == config.LocalPath)
+                    // If the configuration being deleted is the active one, reset UI fields
+                    if (RefFilePathText.Text == config.LocalPath)
                     {
-                        _refWorkbook.Dispose();
-                        _refWorkbook = null;
                         RefFilePathText.Text = "Chưa chọn file Excel tham chiếu.";
                         ChangeSheetsBtn.IsEnabled = false;
                         SelectedRefSheetText.Text = "Chưa chọn";
@@ -1082,8 +1240,24 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private async void ChangeSheets_Click(object sender, RoutedEventArgs e)
         {
-            if (_refWorkbook == null) return;
-            var sheetNames = _refWorkbook.Worksheets.Select(x => x.Name).ToList();
+            string filePath = RefFilePathText.Text;
+            if (string.IsNullOrEmpty(filePath) || filePath == "Chưa chọn file Excel tham chiếu." || !File.Exists(filePath))
+                return;
+
+            ShowRefLoading("Đang đọc danh sách sheet...");
+            List<string> sheetNames;
+            try
+            {
+                sheetNames = await Task.Run(() => GetSheetNames(filePath));
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Không thể đọc file Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                HideRefLoading();
+                return;
+            }
+            HideRefLoading();
+
             var selectorWin = new SheetSelectorWindow(sheetNames) { Owner = this };
             
             if (selectorWin.ShowDialog() == true)
@@ -1102,6 +1276,14 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
         {
             ShowRefLoading("Đang đọc dữ liệu các sheet...");
 
+            string filePath = RefFilePathText.Text;
+            if (string.IsNullOrEmpty(filePath) || filePath == "Chưa chọn file Excel tham chiếu." || !File.Exists(filePath))
+            {
+                MessageBox.Show("Đường dẫn file Excel không hợp lệ hoặc file không tồn tại.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                HideRefLoading();
+                return;
+            }
+
             try
             {
                 // Unbind ItemsSource and clear collections to prevent UI rendering overhead
@@ -1109,142 +1291,157 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 SalesDataGrid.ItemsSource = null;
                 _refItems.Clear();
 
-                // Run Reference and Sales sheet processing sequentially (ClosedXML is NOT thread-safe)
-                var items = await Task.Run(() =>
+                var result = await Task.Run(() =>
                 {
+                    DataSet dataset;
+                    using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        using (var reader = ExcelReaderFactory.CreateReader(stream))
+                        {
+                            dataset = reader.AsDataSet();
+                        }
+                    }
+
                     var resultList = new List<ReferenceItem>();
-                    var worksheet = _refWorkbook.Worksheet(refSheetName);
-
-                    // Find header row in first 20 rows
-                    int headerRow = -1;
-                    int colAbbrev = -1;
-                    int colName = -1;
-                    int colUnit = -1;
-
-                    for (int r = 1; r <= 20; r++)
+                    if (dataset.Tables.Contains(refSheetName))
                     {
-                        var row = worksheet.Row(r);
-                        for (int c = 1; c <= 20; c++)
+                        var refTable = dataset.Tables[refSheetName];
+                        if (refTable != null)
                         {
-                            string val = row.Cell(c).GetString().Trim().ToLower();
-                            if (val.Contains("viết tắt") || val == "viet tat" || val == "ma" || val == "mã")
+                            // Find header row in first 20 rows
+                            int headerRowIndex = -1;
+                            int colAbbrevIndex = -1;
+                            int colNameIndex = -1;
+                            int colUnitIndex = -1;
+
+                            int maxRowsToSearch = Math.Min(20, refTable.Rows.Count);
+                            for (int r = 0; r < maxRowsToSearch; r++)
                             {
-                                colAbbrev = c;
+                                var row = refTable.Rows[r];
+                                for (int c = 0; c < refTable.Columns.Count; c++)
+                                {
+                                    string val = row[c]?.ToString()?.Trim()?.ToLower() ?? "";
+                                    if (val.Contains("viết tắt") || val == "viet tat" || val == "ma" || val == "mã")
+                                    {
+                                        colAbbrevIndex = c;
+                                    }
+                                    else if (val.Contains("tên hàng") || val == "ten hang" || val == "sản phẩm" || val == "san pham")
+                                    {
+                                        colNameIndex = c;
+                                    }
+                                    else if (val.Contains("đơn vị") || val == "don vi" || val == "đvt" || val == "dvt")
+                                    {
+                                        colUnitIndex = c;
+                                    }
+                                }
+
+                                if (colAbbrevIndex != -1 && colNameIndex != -1 && colUnitIndex != -1)
+                                {
+                                    headerRowIndex = r;
+                                    break;
+                                }
                             }
-                            else if (val.Contains("tên hàng") || val == "ten hang" || val == "sản phẩm" || val == "san pham")
+
+                            if (headerRowIndex == -1)
                             {
-                                colName = c;
+                                headerRowIndex = 1; // Default assume row index 1 (which is row 2)
+                                colAbbrevIndex = 0;
+                                colNameIndex = 1;
+                                colUnitIndex = 2;
                             }
-                            else if (val.Contains("đơn vị") || val == "don vi" || val == "đvt" || val == "dvt")
+
+                            int lastRowIndex = Math.Min(refTable.Rows.Count - 1, headerRowIndex + 1000);
+                            for (int r = headerRowIndex + 1; r <= lastRowIndex; r++)
                             {
-                                colUnit = c;
+                                var row = refTable.Rows[r];
+                                if (colAbbrevIndex >= refTable.Columns.Count || colNameIndex >= refTable.Columns.Count || colUnitIndex >= refTable.Columns.Count)
+                                    continue;
+
+                                string abbrev = row[colAbbrevIndex]?.ToString()?.Trim() ?? "";
+                                string name = row[colNameIndex]?.ToString()?.Trim() ?? "";
+                                string unit = row[colUnitIndex]?.ToString()?.Trim() ?? "";
+
+                                if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(abbrev)) continue;
+
+                                string unitLower = unit.ToLower();
+                                if (unitLower == "kg") continue; // Filter out kg, Kg, KG, kG
+
+                                resultList.Add(new ReferenceItem
+                                {
+                                    VietTat = abbrev,
+                                    TenHang = name,
+                                    DonViTinh = unit
+                                });
                             }
                         }
+                    }
 
-                        if (colAbbrev != -1 && colName != -1 && colUnit != -1)
+                    var dt = new DataTable();
+                    if (dataset.Tables.Contains(salesSheetName))
+                    {
+                        var salesTable = dataset.Tables[salesSheetName];
+                        if (salesTable != null && salesTable.Rows.Count > 0)
                         {
-                            headerRow = r;
-                            break;
+                            int colCount = salesTable.Columns.Count;
+                            int rowCount = salesTable.Rows.Count;
+
+                            // Row 0 of salesTable is the header row
+                            var firstRow = salesTable.Rows[0];
+                            for (int col = 0; col < colCount; col++)
+                            {
+                                string header = firstRow[col]?.ToString()?.Trim() ?? "";
+                                if (string.IsNullOrEmpty(header))
+                                {
+                                    header = GetExcelColumnName(col + 1);
+                                }
+
+                                string uniqueHeader = header;
+                                int counter = 1;
+                                while (dt.Columns.Contains(uniqueHeader))
+                                {
+                                    uniqueHeader = $"{header}_{counter++}";
+                                }
+                                dt.Columns.Add(uniqueHeader);
+                            }
+
+                            // Rows 1 to N
+                            for (int r = 1; r < rowCount; r++)
+                            {
+                                var row = salesTable.Rows[r];
+                                var dr = dt.NewRow();
+                                for (int col = 0; col < colCount; col++)
+                                {
+                                    var val = row[col];
+                                    if (val is DateTime dtValue)
+                                    {
+                                        if (dtValue.TimeOfDay == TimeSpan.Zero)
+                                        {
+                                            dr[col] = dtValue.ToString("dd/MM/yyyy");
+                                        }
+                                        else
+                                        {
+                                            dr[col] = dtValue.ToString("dd/MM/yyyy HH:mm:ss");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        dr[col] = val?.ToString() ?? "";
+                                    }
+                                }
+                                dt.Rows.Add(dr);
+                            }
                         }
                     }
 
-                    if (headerRow == -1)
-                    {
-                        headerRow = 2; // Default assume row 2
-                        colAbbrev = 1;
-                        colName = 2;
-                        colUnit = 3;
-                    }
-
-                    int lastRow = Math.Min(worksheet.LastRowUsed()?.RowNumber() ?? 1000, headerRow + 1000);
-                    for (int r = headerRow + 1; r <= lastRow; r++)
-                    {
-                        string abbrev = worksheet.Cell(r, colAbbrev).GetString().Trim();
-                        string name = worksheet.Cell(r, colName).GetString().Trim();
-                        string unit = worksheet.Cell(r, colUnit).GetString().Trim();
-
-                        if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(abbrev)) continue;
-
-                        string unitLower = unit.ToLower();
-                        if (unitLower == "kg") continue; // Filter out kg, Kg, KG, kG
-
-                        resultList.Add(new ReferenceItem
-                        {
-                            VietTat = abbrev,
-                            TenHang = name,
-                            DonViTinh = unit
-                        });
-                    }
-                    return resultList;
+                    return (resultList, dt);
                 });
 
-                foreach (var item in items)
+                foreach (var item in result.Item1)
                 {
                     _refItems.Add(item);
                 }
 
-                var salesDt = await Task.Run(() =>
-                {
-                    var dt = new DataTable();
-                    var worksheet = _refWorkbook.Worksheet(salesSheetName);
-                    var range = worksheet.RangeUsed();
-                    if (range != null)
-                    {
-                        int rowCount = range.RowCount();
-                        int colCount = range.ColumnCount();
-
-                        // Row 1: Headers
-                        var firstRow = range.FirstRow();
-                        for (int col = 1; col <= colCount; col++)
-                        {
-                            string header = firstRow.Cell(col).GetString().Trim();
-                            if (string.IsNullOrEmpty(header))
-                            {
-                                header = XLHelper.GetColumnLetterFromNumber(col);
-                            }
-
-                            string uniqueHeader = header;
-                            int counter = 1;
-                            while (dt.Columns.Contains(uniqueHeader))
-                            {
-                                uniqueHeader = $"{header}_{counter++}";
-                            }
-                            dt.Columns.Add(uniqueHeader);
-                        }
-
-                        // Rows 2 to N
-                        for (int r = 2; r <= rowCount; r++)
-                        {
-                            var row = range.Row(r);
-                            var dr = dt.NewRow();
-                            for (int col = 1; col <= colCount; col++)
-                            {
-                                var cell = row.Cell(col);
-                                var val = cell.HasFormula ? cell.CachedValue : cell.Value;
-                                if (val.Type == XLDataType.DateTime)
-                                {
-                                    var dtValue = val.GetDateTime();
-                                    if (dtValue.TimeOfDay == TimeSpan.Zero)
-                                    {
-                                        dr[col - 1] = dtValue.ToString("dd/MM/yyyy");
-                                    }
-                                    else
-                                    {
-                                        dr[col - 1] = dtValue.ToString("dd/MM/yyyy HH:mm:ss");
-                                    }
-                                }
-                                else
-                                {
-                                    dr[col - 1] = val.ToString();
-                                }
-                            }
-                            dt.Rows.Add(dr);
-                        }
-                    }
-                    return dt;
-                });
-
-                SalesDataGrid.ItemsSource = salesDt.DefaultView;
+                SalesDataGrid.ItemsSource = result.Item2.DefaultView;
             }
             catch (Exception ex)
             {
@@ -1260,42 +1457,67 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private void InitStagingDatabase()
         {
-            try
+            lock (DbWriteLock)
             {
-                string connStr = $"Data Source={StagingDbPath}";
-                using (var connection = new DuckDBConnection(connStr))
+                try
                 {
-                    connection.Open();
-                    using (var cmd = connection.CreateCommand())
+                    string connStr = $"Data Source={StagingDbPath}";
+                    using (var connection = new DuckDBConnection(connStr))
                     {
-                        cmd.CommandText = @"
-                            CREATE TABLE IF NOT EXISTS staging_items (
-                                id VARCHAR PRIMARY KEY,
-                                file_name VARCHAR,
-                                ngay_giao VARCHAR,
-                                khach_hang VARCHAR,
-                                diem_giao VARCHAR,
-                                nguoi_giao VARCHAR,
-                                ten_hang_goc VARCHAR,
-                                ten_hang_khop VARCHAR,
-                                hst VARCHAR,
-                                don_vi VARCHAR,
-                                sl_xuat DOUBLE,
-                                sl_nhan DOUBLE,
-                                sl_hong DOUBLE,
-                                ghi_chu VARCHAR,
-                                status VARCHAR DEFAULT 'Success',
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            );";
-                        cmd.ExecuteNonQuery();
+                        connection.Open();
+                        using (var cmd = connection.CreateCommand())
+                        {
+                            cmd.CommandText = @"
+                                CREATE TABLE IF NOT EXISTS staging_items (
+                                    id VARCHAR PRIMARY KEY,
+                                    file_name VARCHAR,
+                                    ngay_giao VARCHAR,
+                                    khach_hang VARCHAR,
+                                    diem_giao VARCHAR,
+                                    nguoi_giao VARCHAR,
+                                    ten_hang_goc VARCHAR,
+                                    ten_hang_khop VARCHAR,
+                                    hst VARCHAR,
+                                    don_vi VARCHAR,
+                                    sl_xuat DOUBLE,
+                                    sl_nhan DOUBLE,
+                                    sl_hong DOUBLE,
+                                    ghi_chu VARCHAR,
+                                    status VARCHAR DEFAULT 'Success',
+                                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                    match_score DOUBLE DEFAULT 1.0
+                                );";
+                            cmd.ExecuteNonQuery();
+
+                            // Migrate existing database to add column if not exists
+                            cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS match_score DOUBLE DEFAULT 1.0;";
+                            cmd.ExecuteNonQuery();
+
+                            // Clean up items synced > 30 days ago and reclaim physical disk space
+                            try
+                            {
+                                cmd.CommandText = "DELETE FROM staging_items WHERE status = 'Synced' AND created_at < now() - INTERVAL '30 days';";
+                                int deletedCount = cmd.ExecuteNonQuery();
+                                if (deletedCount > 0)
+                                {
+                                    Logger.Log($"[DuckDB Dọn Dẹp] Đã xóa {deletedCount} dòng staging đã đồng bộ quá 30 ngày.");
+                                    cmd.CommandText = "VACUUM;";
+                                    cmd.ExecuteNonQuery();
+                                }
+                            }
+                            catch (Exception dbEx)
+                            {
+                                Logger.Log($"[DuckDB Dọn Dẹp Lỗi] {dbEx.Message}");
+                            }
+                        }
                     }
+                    Logger.Log("[DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.");
                 }
-                Logger.Log("[DuckDB] Khởi tạo cơ sở dữ liệu DuckDB thành công.");
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"[DuckDB Lỗi] Không thể khởi tạo database: {ex.Message}");
-                MessageBox.Show($"Lỗi khởi tạo cơ sở dữ liệu DuckDB: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                catch (Exception ex)
+                {
+                    Logger.Log($"[DuckDB Lỗi] Không thể khởi tạo database: {ex.Message}");
+                    MessageBox.Show($"Lỗi khởi tạo cơ sở dữ liệu DuckDB: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
 
@@ -1304,35 +1526,39 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             _stagingItems.Clear();
             try
             {
-                string connStr = $"Data Source={StagingDbPath}";
-                using (var connection = new DuckDBConnection(connStr))
+                lock (DbWriteLock)
                 {
-                    connection.Open();
-                    using (var cmd = connection.CreateCommand())
+                    string connStr = $"Data Source={StagingDbPath}";
+                    using (var connection = new DuckDBConnection(connStr))
                     {
-                        cmd.CommandText = "SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu FROM staging_items WHERE status != 'Synced' ORDER BY created_at DESC;";
-                        using (var reader = cmd.ExecuteReader())
+                        connection.Open();
+                        using (var cmd = connection.CreateCommand())
                         {
-                            while (reader.Read())
+                            cmd.CommandText = "SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, match_score FROM staging_items WHERE status != 'Synced' ORDER BY created_at DESC;";
+                            using (var reader = cmd.ExecuteReader())
                             {
-                                var item = new StagingItem
+                                while (reader.Read())
                                 {
-                                    Id = reader.GetString(0),
-                                    FileName = reader.GetString(1),
-                                    NgayGiao = reader.IsDBNull(2) ? "" : reader.GetString(2),
-                                    KhachHang = reader.IsDBNull(3) ? "" : reader.GetString(3),
-                                    DiemGiao = reader.IsDBNull(4) ? "" : reader.GetString(4),
-                                    NguoiGiao = reader.IsDBNull(5) ? "" : reader.GetString(5),
-                                    TenHangGoc = reader.IsDBNull(6) ? "" : reader.GetString(6),
-                                    TenHangKhop = reader.IsDBNull(7) ? "" : reader.GetString(7),
-                                    Hst = reader.IsDBNull(8) ? "" : reader.GetString(8),
-                                    DonVi = reader.IsDBNull(9) ? "" : reader.GetString(9),
-                                    SlXuat = reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
-                                    SlNhan = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
-                                    SlHong = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
-                                    GhiChu = reader.IsDBNull(13) ? "" : reader.GetString(13)
-                                };
-                                _stagingItems.Add(item);
+                                    var item = new StagingItem
+                                    {
+                                        Id = reader.GetString(0),
+                                        FileName = reader.GetString(1),
+                                        NgayGiao = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                                        KhachHang = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                                        DiemGiao = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                                        NguoiGiao = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                                        TenHangGoc = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                                        TenHangKhop = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                                        Hst = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                                        DonVi = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                                        SlXuat = reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                                        SlNhan = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                                        SlHong = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                                        GhiChu = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                                        MatchScore = reader.IsDBNull(14) ? 1.0 : reader.GetDouble(14)
+                                    };
+                                    _stagingItems.Add(item);
+                                }
                             }
                         }
                     }
@@ -1350,41 +1576,46 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
         {
             try
             {
-                string connStr = $"Data Source={StagingDbPath}";
-                using (var connection = new DuckDBConnection(connStr))
+                lock (DbWriteLock)
                 {
-                    connection.Open();
-                    using (var cmd = connection.CreateCommand())
+                    string connStr = $"Data Source={StagingDbPath}";
+                    using (var connection = new DuckDBConnection(connStr))
                     {
-                        cmd.CommandText = @"
-                            UPDATE staging_items SET 
-                                ngay_giao = $ngay_giao, 
-                                khach_hang = $khach_hang, 
-                                diem_giao = $diem_giao, 
-                                nguoi_giao = $nguoi_giao, 
-                                ten_hang_khop = $ten_hang_khop, 
-                                hst = $hst, 
-                                don_vi = $don_vi,
-                                sl_xuat = $sl_xuat, 
-                                sl_nhan = $sl_nhan, 
-                                sl_hong = $sl_hong, 
-                                ghi_chu = $ghi_chu 
-                            WHERE id = $id;";
-                        
-                        cmd.Parameters.Add(new DuckDBParameter("ngay_giao", item.NgayGiao ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("khach_hang", item.KhachHang ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("diem_giao", item.DiemGiao ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", item.NguoiGiao ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", item.TenHangKhop ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("hst", item.Hst ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("don_vi", item.DonVi ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("sl_xuat", item.SlXuat));
-                        cmd.Parameters.Add(new DuckDBParameter("sl_nhan", item.SlNhan));
-                        cmd.Parameters.Add(new DuckDBParameter("sl_hong", item.SlHong));
-                        cmd.Parameters.Add(new DuckDBParameter("ghi_chu", item.GhiChu ?? ""));
-                        cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
+                        connection.Open();
+                        using (var cmd = connection.CreateCommand())
+                        {
+                            cmd.CommandText = @"
+                                UPDATE staging_items SET 
+                                    ngay_giao = $ngay_giao, 
+                                    khach_hang = $khach_hang, 
+                                    diem_giao = $diem_giao, 
+                                    nguoi_giao = $nguoi_giao, 
+                                    ten_hang_khop = $ten_hang_khop, 
+                                    hst = $hst, 
+                                    don_vi = $don_vi,
+                                    sl_xuat = $sl_xuat, 
+                                    sl_nhan = $sl_nhan, 
+                                    sl_hong = $sl_hong, 
+                                    ghi_chu = $ghi_chu,
+                                    match_score = $match_score
+                                WHERE id = $id;";
+                            
+                            cmd.Parameters.Add(new DuckDBParameter("ngay_giao", item.NgayGiao ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("khach_hang", item.KhachHang ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("diem_giao", item.DiemGiao ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", item.NguoiGiao ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", item.TenHangKhop ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("hst", item.Hst ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("don_vi", item.DonVi ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("sl_xuat", item.SlXuat));
+                            cmd.Parameters.Add(new DuckDBParameter("sl_nhan", item.SlNhan));
+                            cmd.Parameters.Add(new DuckDBParameter("sl_hong", item.SlHong));
+                            cmd.Parameters.Add(new DuckDBParameter("ghi_chu", item.GhiChu ?? ""));
+                            cmd.Parameters.Add(new DuckDBParameter("match_score", item.MatchScore));
+                            cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
 
-                        cmd.ExecuteNonQuery();
+                            cmd.ExecuteNonQuery();
+                        }
                     }
                 }
             }
@@ -1413,6 +1644,14 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             // Filter out 'kg' units from reference list
             var targetRefItems = _refItems.Where(x => !x.DonViTinh.Equals("kg", StringComparison.OrdinalIgnoreCase)).ToList();
 
+            // Cache pre-cleaned reference strings to avoid redundant sign-stripping and allocation loops
+            var cachedRefItems = targetRefItems.Select(x => new CachedRefInfo
+            {
+                Item = x,
+                CleanTenHang = FuzzyMatcher.RemoveSign4VietnameseString(x.TenHang.Trim().ToLower()),
+                CleanVietTat = FuzzyMatcher.RemoveSign4VietnameseString(x.VietTat.Trim().ToLower())
+            }).ToList();
+
             ShowRefLoading("Đang đối soát sản phẩm và lưu vào DuckDB...");
             
             try
@@ -1421,7 +1660,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 {
                     // Phase 1: Fuzzy match parallel (CPU-bound, no DB access)
                     var matchResults = new ConcurrentBag<(string fileName, InvoiceData data, InvoiceItem itemRow,
-                        string tenKhop, string hst, string donVi)>();
+                        string tenKhop, string hst, string donVi, double bestScore)>();
 
                     Parallel.ForEach(processedSuccessItems, item =>
                     {
@@ -1431,7 +1670,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
                         foreach (var itemRow in data.danh_sach_hang_hoa)
                         {
-                            var matchedItem = FuzzyMatcher.FindBestMatch(itemRow.ten_hang, targetRefItems, out double bestScore);
+                            var matchedItem = FuzzyMatcher.FindBestMatchOptimized(itemRow.ten_hang, cachedRefItems, out double bestScore);
 
                             string tenKhop = "";
                             string hst = "";
@@ -1443,41 +1682,49 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                 hst = matchedItem.VietTat;
                                 donVi = matchedItem.DonViTinh;
                             }
-                            matchResults.Add((fileName, data, itemRow, tenKhop, hst, donVi));
+                            matchResults.Add((fileName, data, itemRow, tenKhop, hst, donVi, bestScore));
                         }
                     });
 
-                    // Phase 2: Batch DuckDB insert — single connection, no lock needed
+                    // Phase 2: Batch DuckDB insert under transaction & lock (DbWriteLock)
                     try
                     {
-                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                        lock (DbWriteLock)
                         {
-                            conn.Open();
-                            foreach (var r in matchResults)
+                            using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
                             {
-                                using (var cmd = conn.CreateCommand())
+                                conn.Open();
+                                using (var tx = conn.BeginTransaction())
                                 {
-                                    cmd.CommandText = @"
-                                        INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status) 
-                                        VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status);";
+                                    foreach (var r in matchResults)
+                                    {
+                                        using (var cmd = conn.CreateCommand())
+                                        {
+                                            cmd.CommandText = @"
+                                                INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status, match_score) 
+                                                VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status, $match_score);";
 
-                                    cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
-                                    cmd.Parameters.Add(new DuckDBParameter("file_name", r.fileName));
-                                    cmd.Parameters.Add(new DuckDBParameter("ngay_giao", r.data.ngay_giao ?? ""));
-                                    cmd.Parameters.Add(new DuckDBParameter("khach_hang", FuzzyMatcher.FormatKhachHang(r.data.khach_hang ?? "")));
-                                    cmd.Parameters.Add(new DuckDBParameter("diem_giao", FuzzyMatcher.FormatDiemGiao(r.data.diem_giao ?? "")));
-                                    cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", r.data.ten_nguoi_giao ?? ""));
-                                    cmd.Parameters.Add(new DuckDBParameter("ten_hang_goc", r.itemRow.ten_hang ?? ""));
-                                    cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", r.tenKhop));
-                                    cmd.Parameters.Add(new DuckDBParameter("hst", r.hst));
-                                    cmd.Parameters.Add(new DuckDBParameter("don_vi", r.donVi));
-                                    cmd.Parameters.Add(new DuckDBParameter("sl_xuat", r.itemRow.sl_xuat));
-                                    cmd.Parameters.Add(new DuckDBParameter("sl_nhan", r.itemRow.sl_nhan));
-                                    cmd.Parameters.Add(new DuckDBParameter("sl_hong", r.itemRow.sl_hong));
-                                    cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
-                                    cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
+                                            cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
+                                            cmd.Parameters.Add(new DuckDBParameter("file_name", r.fileName));
+                                            cmd.Parameters.Add(new DuckDBParameter("ngay_giao", r.data.ngay_giao ?? ""));
+                                            cmd.Parameters.Add(new DuckDBParameter("khach_hang", FuzzyMatcher.FormatKhachHang(r.data.khach_hang ?? "")));
+                                            cmd.Parameters.Add(new DuckDBParameter("diem_giao", FuzzyMatcher.FormatDiemGiao(r.data.diem_giao ?? "")));
+                                            cmd.Parameters.Add(new DuckDBParameter("nguoi_giao", r.data.ten_nguoi_giao ?? ""));
+                                            cmd.Parameters.Add(new DuckDBParameter("ten_hang_goc", r.itemRow.ten_hang ?? ""));
+                                            cmd.Parameters.Add(new DuckDBParameter("ten_hang_khop", r.tenKhop));
+                                            cmd.Parameters.Add(new DuckDBParameter("hst", r.hst));
+                                            cmd.Parameters.Add(new DuckDBParameter("don_vi", r.donVi));
+                                            cmd.Parameters.Add(new DuckDBParameter("sl_xuat", r.itemRow.sl_xuat));
+                                            cmd.Parameters.Add(new DuckDBParameter("sl_nhan", r.itemRow.sl_nhan));
+                                            cmd.Parameters.Add(new DuckDBParameter("sl_hong", r.itemRow.sl_hong));
+                                            cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
+                                            cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
+                                            cmd.Parameters.Add(new DuckDBParameter("match_score", r.bestScore));
 
-                                    cmd.ExecuteNonQuery();
+                                            cmd.ExecuteNonQuery();
+                                        }
+                                    }
+                                    tx.Commit();
                                 }
                             }
                         }
@@ -1524,15 +1771,18 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             {
                 try
                 {
-                    using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                    lock (DbWriteLock)
                     {
-                        conn.Open();
-                        using (var cmd = conn.CreateCommand())
+                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
                         {
-                            // Batch delete — single statement with IN clause
-                            var idList = string.Join(", ", selected.Select(x => $"'{x.Id}'"));
-                            cmd.CommandText = $"DELETE FROM staging_items WHERE id IN ({idList});";
-                            cmd.ExecuteNonQuery();
+                            conn.Open();
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                // Batch delete — single statement with IN clause
+                                var idList = string.Join(", ", selected.Select(x => $"'{x.Id}'"));
+                                cmd.CommandText = $"DELETE FROM staging_items WHERE id IN ({idList});";
+                                cmd.ExecuteNonQuery();
+                            }
                         }
                     }
                     LoadStagingItemsFromDb();
@@ -1555,26 +1805,74 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private void PreviewDataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
         {
-            if (e.EditAction == DataGridEditAction.Commit && e.Row.Item is StagingItem stagingItem)
+            string header = e.Column.Header.ToString().ToLower();
+            if (header.Contains("sl xuất") || header.Contains("sl nhận"))
+            {
+                var textBox = e.EditingElement as TextBox;
+                if (textBox != null)
+                {
+                    string newText = textBox.Text.Trim();
+                    if (!double.TryParse(newText, out double val) || val < 0)
+                    {
+                        MessageBox.Show("Số lượng phải là một số không âm hợp lệ.", "Lỗi nhập liệu", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        if (e.Row.Item is StagingItem stagingItem)
+                        {
+                            if (header.Contains("sl xuất"))
+                                textBox.Text = stagingItem.SlXuat.ToString();
+                            else
+                                textBox.Text = stagingItem.SlNhan.ToString();
+                        }
+                    }
+                }
+            }
+
+            if (e.EditAction == DataGridEditAction.Commit && e.Row.Item is StagingItem stagingItem2)
             {
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     // Recalculate SL Hỏng
-                    stagingItem.SlHong = stagingItem.SlXuat - stagingItem.SlNhan;
+                    stagingItem2.SlHong = stagingItem2.SlXuat - stagingItem2.SlNhan;
 
                     // Automatically update hst and donVi if name is matched manually
                     if (e.Column.Header.ToString().Contains("Tên khớp"))
                     {
-                        var refMatch = _refItems.FirstOrDefault(x => x.TenHang.Equals(stagingItem.TenHangKhop, StringComparison.OrdinalIgnoreCase));
+                        var refMatch = _refItems.FirstOrDefault(x => x.TenHang.Equals(stagingItem2.TenHangKhop, StringComparison.OrdinalIgnoreCase));
                         if (refMatch != null)
                         {
-                            stagingItem.Hst = refMatch.VietTat;
-                            stagingItem.DonVi = refMatch.DonViTinh;
+                            stagingItem2.Hst = refMatch.VietTat;
+                            stagingItem2.DonVi = refMatch.DonViTinh;
                         }
                     }
 
-                    UpdateStagingItemInDb(stagingItem);
+                    // User manually modified the row -> set MatchScore to 1.0
+                    stagingItem2.MatchScore = 1.0;
+
+                    UpdateStagingItemInDb(stagingItem2);
                 }), System.Windows.Threading.DispatcherPriority.Background);
+            }
+        }
+
+        private void ProductsGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            string header = e.Column.Header.ToString().ToLower();
+            if (header.Contains("sl xuất") || header.Contains("sl nhận"))
+            {
+                var textBox = e.EditingElement as TextBox;
+                if (textBox != null)
+                {
+                    string newText = textBox.Text.Trim();
+                    if (!double.TryParse(newText, out double val) || val < 0)
+                    {
+                        MessageBox.Show("Số lượng phải là một số không âm hợp lệ.", "Lỗi nhập liệu", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        if (e.Row.Item is InvoiceItem item)
+                        {
+                            if (header.Contains("sl xuất"))
+                                textBox.Text = item.sl_xuat.ToString();
+                            else
+                                textBox.Text = item.sl_nhan.ToString();
+                        }
+                    }
+                }
             }
         }
 
@@ -1624,10 +1922,6 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
             try
             {
-                // Crucial step: Dispose open memory reference of Excel before modifying it
-                _refWorkbook?.Dispose();
-                _refWorkbook = null;
-
                 await Task.Run(() =>
                 {
                     using (var workbook = new XLWorkbook(activeConfig.LocalPath))
@@ -1700,15 +1994,18 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         workbook.Save();
                     }
 
-                    // Update status in DuckDB staging to 'Synced' — batch single statement
-                    using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                    // Update status in DuckDB staging to 'Synced' — batch single statement under DbWriteLock
+                    lock (DbWriteLock)
                     {
-                        conn.Open();
-                        using (var cmd = conn.CreateCommand())
+                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
                         {
-                            var idList = string.Join(", ", itemsToCommit.Select(x => $"'{x.Id}'"));
-                            cmd.CommandText = $"UPDATE staging_items SET status = 'Synced' WHERE id IN ({idList});";
-                            cmd.ExecuteNonQuery();
+                            conn.Open();
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                var idList = string.Join(", ", itemsToCommit.Select(x => $"'{x.Id}'"));
+                                cmd.CommandText = $"UPDATE staging_items SET status = 'Synced' WHERE id IN ({idList});";
+                                cmd.ExecuteNonQuery();
+                            }
                         }
                     }
                 });
@@ -1718,9 +2015,6 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 // Reload preview grid (synced items are removed)
                 LoadStagingItemsFromDb();
 
-                // Re-open and re-load workbook in application memory
-                var workbookCopy = await Task.Run(() => new XLWorkbook(activeConfig.LocalPath));
-                _refWorkbook = workbookCopy;
 
                 // Reload sheets on Tham chiếu tab to show the newly committed data!
                 await LoadBothSheetsAsync(activeConfig.RefSheet, activeConfig.SalesSheet);
@@ -1779,14 +2073,44 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
             _cts?.Dispose();
-            _refWorkbook?.Dispose();
-            _refWorkbook = null;
-            if (_tessEngine.IsValueCreated)
+            if (_tessEngine.Values != null)
             {
-                _tessEngine.Value?.Dispose();
+                foreach (var engine in _tessEngine.Values)
+                {
+                    engine?.Dispose();
+                }
             }
             _tessEngine.Dispose();
             Logger.Flush();
+        }
+
+        private List<string> GetSheetNames(string filePath)
+        {
+            var sheetNames = new List<string>();
+            System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+            using (var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                using (var reader = ExcelReaderFactory.CreateReader(stream))
+                {
+                    do
+                    {
+                        sheetNames.Add(reader.Name);
+                    } while (reader.NextResult());
+                }
+            }
+            return sheetNames;
+        }
+
+        private static string GetExcelColumnName(int columnNumber)
+        {
+            string columnName = "";
+            while (columnNumber > 0)
+            {
+                int modulo = (columnNumber - 1) % 26;
+                columnName = Convert.ToChar('A' + modulo) + columnName;
+                columnNumber = (columnNumber - modulo) / 26;
+            }
+            return columnName;
         }
     }
 
@@ -1926,6 +2250,36 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             return bestMatch;
         }
 
+        public static ReferenceItem? FindBestMatchOptimized(string rawName, IEnumerable<CachedRefInfo> cachedItems, out double bestScore)
+        {
+            bestScore = 0.0;
+            ReferenceItem? bestMatch = null;
+
+            string cleanRaw = RemoveSign4VietnameseString(rawName.Trim().ToLower());
+
+            foreach (var cached in cachedItems)
+            {
+                if (!string.IsNullOrEmpty(cached.CleanVietTat) && cleanRaw == cached.CleanVietTat)
+                {
+                    bestScore = 1.0;
+                    return cached.Item;
+                }
+
+                double tokenScore = GetTokenMatchScore(cleanRaw, cached.CleanTenHang);
+                double jwScore = JaroWinklerDistance(cleanRaw, cached.CleanTenHang);
+
+                double score = (0.6 * tokenScore) + (0.4 * jwScore);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestMatch = cached.Item;
+                }
+            }
+
+            return bestMatch;
+        }
+
         public static string FormatDiemGiao(string value)
         {
             if (string.IsNullOrEmpty(value)) return "";
@@ -1989,6 +2343,27 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             if (cleaned.Length == 1) return cleaned.ToUpper();
             
             return char.ToUpper(cleaned[0]) + cleaned.Substring(1).ToLower();
+        }
+    }
+
+    public class MatchScoreToBrushConverter : System.Windows.Data.IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is double score)
+            {
+                if (score < 0.75)
+                {
+                    // Light yellow/amber warning background
+                    return new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(254, 243, 199)); // #fef3c7 (Amber 100)
+                }
+            }
+            return System.Windows.DependencyProperty.UnsetValue;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        {
+            throw new NotImplementedException();
         }
     }
 }

@@ -43,3 +43,7 @@ D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\linux-x64\native\l
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\osx\native\libduckdb.dylib
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\win-arm64\native\duckdb.dll
 D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\runtimes\win-x64\native\duckdb.dll
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\GeneratedInternalTypeHelper.g.cs
+D:\Excel\AccountingOcrTest\obj\Debug\net10.0-windows\AccountingOcrTest_MarkupCompile.lref
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\ExcelDataReader.dll
+D:\Excel\AccountingOcrTest\bin\Debug\net10.0-windows\ExcelDataReader.DataSet.dll
