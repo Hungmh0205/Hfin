@@ -5,10 +5,10 @@ $ProjectDir = $PSScriptRoot
 if ($ProjectDir -eq "" -or $ProjectDir -eq $null) {
     $ProjectDir = Get-Location
 }
-$PublishDir = "$ProjectDir\bin\Release\net10.0-windows\win-x64\publish"
+$PublishDir = "$ProjectDir\bin\Release\net10.0-windows\publish"
 
 Write-Host "1. Building and publishing the WPF application..." -ForegroundColor Green
-dotnet publish "$ProjectDir\AccountingOcrTest.csproj" -c Release -r win-x64 --self-contained -p:PublishSingleFile=false
+dotnet publish "$ProjectDir\AccountingOcrTest.csproj" -c Release
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Dotnet publish failed!"
@@ -64,7 +64,7 @@ Write-Host "Compiling setup.iss..." -ForegroundColor Cyan
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "`nSUCCESS! The installer has been created in:" -ForegroundColor Green
-    Write-Host "  $ProjectDir\..\InstallerOutput\AccountingOcrSetup.exe" -ForegroundColor Green
+    Write-Host "  $ProjectDir\..\InstallerOutput\HFinSetup.exe" -ForegroundColor Green
 } else {
     Write-Error "Inno Setup compilation failed!"
     exit 1

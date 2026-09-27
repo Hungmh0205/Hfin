@@ -1,0 +1,7 @@
+{
+  "Provider": "Gemini",
+  "Endpoint": "https://api.openai.com",
+  "ApiKey": "YOUR_API_KEY_HERE",
+  "ModelName": "gpt-4o",
+  "Concurrency": 15
+}

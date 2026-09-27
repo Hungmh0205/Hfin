@@ -1,11 +1,11 @@
-; Inno Setup script for Accounting OCR WPF Application
-#define MyAppName "Accounting OCR"
+; Inno Setup script for HFin WPF Application
+#define MyAppName "HFin"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Hdevs"
-#define MyAppExeName "AccountingOcrTest.exe"
+#define MyAppExeName "HFin.exe"
 
 [Setup]
-AppId={D8F8F982-FFDE-4E11-9A33-BC7C1D18AF10}
+AppId={{D8F8F982-FFDE-4E11-9A33-BC7C1D18AF10}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -13,7 +13,7 @@ DefaultDirName={code:GetDefaultDirName}
 DefaultGroupName={#MyAppPublisher} office
 DisableProgramGroupPage=yes
 OutputDir=..\InstallerOutput
-OutputBaseFilename=AccountingOcrSetup
+OutputBaseFilename=HFinSetup
 SetupIconFile=logo.ico
 Compression=lzma2
 SolidCompression=yes

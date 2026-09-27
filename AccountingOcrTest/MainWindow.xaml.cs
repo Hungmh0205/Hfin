@@ -52,7 +52,19 @@ namespace AccountingOcrTest
         // DuckDB staging variables
         private static readonly string StagingDbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "accounting_staging.db");
         private ObservableCollection<StagingItem> _stagingItems = new ObservableCollection<StagingItem>();
+        private ObservableCollection<SyncBatchItem> _syncBatches = new ObservableCollection<SyncBatchItem>();
+        private ICollectionView _stagingItemsView;
+        private ICollectionView _syncBatchesView;
+        private bool _isUpdatingPreviewFilters = false;
+        private bool _isUpdatingHistoryFilters = false;
         private static readonly object DbWriteLock = new object();
+
+        // OpenAI-compatible provider state
+        private static readonly string OpenAiConfigFilePath = "openai_config.json";
+        private bool _useOpenAiCompat = false;
+        private bool _isInitialized = false;
+        private bool _isUpdatingSelectAll = false;
+        private bool _isSwitchingTab = false;
 
         // Fix #3: Static HttpClient — avoids socket exhaustion and DNS caching issues
         private static readonly HttpClient _httpClient = new HttpClient
@@ -106,9 +118,34 @@ namespace AccountingOcrTest
             HomeConfigsGrid.ItemsSource = _excelConfigs;
             LoadExcelConfigs();
 
+            // Auto-restore active Excel config if available and file exists
+            var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
+            if (activeConfig != null && File.Exists(activeConfig.LocalPath))
+            {
+                RefFilePathText.Text = activeConfig.LocalPath;
+                SelectedRefSheetText.Text = activeConfig.RefSheet;
+                SelectedSalesSheetText.Text = activeConfig.SalesSheet;
+                ChangeSheetsBtn.IsEnabled = true;
+                _ = LoadBothSheetsAsync(activeConfig.RefSheet, activeConfig.SalesSheet);
+            }
+            else if (activeConfig != null)
+            {
+                activeConfig.IsActive = false;
+                SaveExcelConfigs();
+            }
+
             // Setup DuckDB Staging Database
             InitStagingDatabase();
             LoadStagingItemsFromDb();
+            
+            _syncBatchesView = CollectionViewSource.GetDefaultView(_syncBatches);
+            _syncBatchesView.Filter = HistoryFilter;
+            HistoryDataGrid.ItemsSource = _syncBatchesView;
+            LoadSyncHistoryFromDb();
+
+            // Load saved OpenAI-compatible config
+            LoadOpenAiConfig();
+            _isInitialized = true;
         }
 
         private bool SearchFilter(object item)
@@ -125,7 +162,26 @@ namespace AccountingOcrTest
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (_itemsView != null)
+            {
                 _itemsView.Refresh();
+                UpdateBatchActionBar();
+            }
+        }
+
+        private void SearchBox_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (SearchBox.Text == "🔍 Tìm kiếm...")
+            {
+                SearchBox.Text = "";
+            }
+        }
+
+        private void SearchBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(SearchBox.Text))
+            {
+                SearchBox.Text = "🔍 Tìm kiếm...";
+            }
         }
 
         private void SettingsBtn_Click(object sender, RoutedEventArgs e)
@@ -136,6 +192,8 @@ namespace AccountingOcrTest
 
         private void AddImagesBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
             if (string.IsNullOrWhiteSpace(ShipperSelector.Text))
             {
                 MessageBox.Show("Vui lòng nhập hoặc chọn Tên người giao hàng trước khi thêm ảnh.", "Bắt buộc", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -157,6 +215,20 @@ namespace AccountingOcrTest
                 ContinueBtn.Visibility = Visibility.Collapsed;
                 foreach (var file in openFileDialog.FileNames)
                 {
+                    try
+                    {
+                        string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                        string targetPath = Path.Combine(targetDir, System.IO.Path.GetFileName(file));
+                        if (!File.Exists(targetPath))
+                        {
+                            File.Copy(file, targetPath, true);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"[Sao chép ảnh lỗi] Không thể sao chép {file} vào raw_material: {ex.Message}");
+                    }
+
                     _items.Add(new ProcessingItem 
                     { 
                         FilePath = file, 
@@ -164,7 +236,148 @@ namespace AccountingOcrTest
                         Status = ProcessStatus.Waiting
                     });
                 }
+                UpdateBatchActionBar();
             }
+        }
+
+        private void SelectAllCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingSelectAll) return;
+
+            bool isChecked = SelectAllCheckBox.IsChecked == true;
+            _isUpdatingSelectAll = true;
+            try
+            {
+                if (_itemsView != null)
+                {
+                    foreach (var obj in _itemsView)
+                    {
+                        if (obj is ProcessingItem item)
+                        {
+                            item.IsChecked = isChecked;
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var item in _items)
+                    {
+                        item.IsChecked = isChecked;
+                    }
+                }
+            }
+            finally
+            {
+                _isUpdatingSelectAll = false;
+            }
+
+            UpdateBatchActionBar();
+        }
+
+        private void ItemCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isUpdatingSelectAll) return;
+            UpdateBatchActionBar();
+        }
+
+        private void UpdateBatchActionBar()
+        {
+            if (BatchActionBar == null || BatchSelectionText == null) return;
+
+            int totalCount = _items.Count;
+            int checkedCount = _items.Count(x => x.IsChecked);
+
+            if (checkedCount > 0)
+            {
+                BatchActionBar.Visibility = Visibility.Visible;
+                BatchSelectionText.Text = $"Đã chọn {checkedCount} ảnh";
+            }
+            else
+            {
+                BatchActionBar.Visibility = Visibility.Collapsed;
+            }
+
+            if (SelectAllCheckBox != null && !_isUpdatingSelectAll)
+            {
+                _isUpdatingSelectAll = true;
+                try
+                {
+                    if (totalCount == 0 || checkedCount == 0)
+                    {
+                        SelectAllCheckBox.IsChecked = false;
+                    }
+                    else if (checkedCount == totalCount)
+                    {
+                        SelectAllCheckBox.IsChecked = true;
+                    }
+                    else
+                    {
+                        SelectAllCheckBox.IsChecked = null;
+                    }
+                }
+                finally
+                {
+                    _isUpdatingSelectAll = false;
+                }
+            }
+        }
+
+        private void BatchDeleteBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var checkedItems = _items.Where(x => x.IsChecked).ToList();
+            if (checkedItems.Count == 0)
+            {
+                MessageBox.Show("Vui lòng chọn ít nhất 1 ảnh để xóa.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (checkedItems.Any(x => x.Status == ProcessStatus.Processing))
+            {
+                MessageBox.Show("Không thể xóa các ảnh đang trong quá trình xử lý.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"Bạn có chắc chắn muốn xóa {checkedItems.Count} ảnh đã chọn khỏi danh sách không?",
+                "Xác nhận xóa hàng loạt",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                if (ItemsListBox.SelectedItem is ProcessingItem selected && checkedItems.Contains(selected))
+                {
+                    ItemsListBox.SelectedItem = null;
+                    PreviewImage.Source = null;
+                }
+
+                foreach (var item in checkedItems)
+                {
+                    _items.Remove(item);
+                }
+
+                UpdateBatchActionBar();
+            }
+        }
+
+        private async void BatchReprocessBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureExcelLoaded()) return;
+
+            var checkedItems = _items.Where(x => x.IsChecked).ToList();
+            if (checkedItems.Count == 0)
+            {
+                MessageBox.Show("Vui lòng tích chọn ít nhất 1 ảnh để xử lý lại.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (checkedItems.Any(x => x.Status == ProcessStatus.Processing))
+            {
+                MessageBox.Show("Không thể xử lý lại khi có ảnh đang trong quá trình chạy.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await ExecuteProcessingAsync(checkedItems);
         }
 
         // Fix #1: Async image loading with DecodePixelWidth to prevent UI freeze
@@ -282,6 +495,28 @@ namespace AccountingOcrTest
 
         private async void StartBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
+            var waitingItems = _items.Where(x => x.Status == ProcessStatus.Waiting).ToList();
+            if (waitingItems.Count == 0)
+            {
+                MessageBox.Show("Không có ảnh nào đang chờ xử lý.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            await ExecuteProcessingAsync(waitingItems);
+        }
+
+        private async Task ExecuteProcessingAsync(List<ProcessingItem> targetItems)
+        {
+            if (!EnsureExcelLoaded()) return;
+
+            if (targetItems == null || targetItems.Count == 0)
+            {
+                MessageBox.Show("Không có ảnh nào để xử lý.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(ShipperSelector.Text))
             {
                 MessageBox.Show("Vui lòng nhập hoặc chọn Tên người giao hàng trước khi bắt đầu.", "Bắt buộc", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -296,17 +531,35 @@ namespace AccountingOcrTest
                 SaveShippers();
             }
 
-            if (_apiKeyManager.Keys.Count == 0)
+            if (_useOpenAiCompat)
             {
-                MessageBox.Show("Vui lòng cài đặt API Key trước khi bắt đầu.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                if (string.IsNullOrWhiteSpace(OpenAiEndpointBox.Text))
+                {
+                    MessageBox.Show("Vui lòng nhập Endpoint URL cho OpenAI-compatible provider.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    OpenAiEndpointBox.Focus();
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(OpenAiKeyBox.Text))
+                {
+                    MessageBox.Show("Vui lòng nhập API Key cho OpenAI-compatible provider.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    OpenAiKeyBox.Focus();
+                    return;
+                }
+                SaveOpenAiConfig();
+            }
+            else
+            {
+                if (_apiKeyManager.Keys.Count == 0)
+                {
+                    MessageBox.Show("Vui lòng cài đặt API Key trước khi bắt đầu.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
             }
 
-            var waitingItems = _items.Where(x => x.Status == ProcessStatus.Waiting).ToList();
-            if (waitingItems.Count == 0)
+            foreach (var item in targetItems)
             {
-                MessageBox.Show("Không có ảnh nào đang chờ xử lý.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
+                item.Status = ProcessStatus.Waiting;
+                item.ErrorMessage = "";
             }
 
             // UI state: processing mode
@@ -323,15 +576,33 @@ namespace AccountingOcrTest
             try
             {
                 string selectedModel = "gemini-3.5-flash";
-                if (ModelSelector.SelectedItem is ComboBoxItem comboItem)
+                string openAiEndpoint = "";
+                string openAiKey = "";
+                int concurrencyLevel;
+
+                if (_useOpenAiCompat)
                 {
-                    selectedModel = comboItem.Content.ToString();
+                    openAiEndpoint = OpenAiEndpointBox.Text.Trim();
+                    openAiKey = OpenAiKeyBox.Text.Trim();
+                    selectedModel = string.IsNullOrWhiteSpace(OpenAiModelBox.Text) ? "gpt-4o" : OpenAiModelBox.Text.Trim();
+                    int maxConc = 15;
+                    if (OpenAiConcurrencyBox != null && int.TryParse(OpenAiConcurrencyBox.Text?.Trim(), out int c) && c > 0)
+                    {
+                        maxConc = Math.Clamp(c, 1, 30);
+                    }
+                    concurrencyLevel = Math.Min(targetItems.Count, maxConc);
+                }
+                else
+                {
+                    if (ModelSelector.SelectedItem is ComboBoxItem comboItem)
+                    {
+                        selectedModel = comboItem.Content.ToString();
+                    }
+                    concurrencyLevel = Math.Min(targetItems.Count, _apiKeyManager.Keys.Count * 2);
+                    if (concurrencyLevel == 0) concurrencyLevel = 1; // Fallback nếu không có key
                 }
 
-                int concurrencyLevel = Math.Min(waitingItems.Count, _apiKeyManager.Keys.Count * 2);
-                if (concurrencyLevel == 0) concurrencyLevel = 1; // Fallback nếu không có key
-
-                int total = waitingItems.Count;
+                int total = targetItems.Count;
                 int completed = 0;
 
                 // Fix #10: Show progress indicator
@@ -341,10 +612,10 @@ namespace AccountingOcrTest
                 ProgressBar.Value = 0;
                 ProgressText.Text = $"0/{total}";
 
-                Logger.Log($"[Bắt đầu] Đang xử lý {total} hóa đơn bằng {selectedModel} với {concurrencyLevel} luồng...");
+                Logger.Log($"[Bắt đầu] Đang xử lý {total} hóa đơn bằng {selectedModel} (Provider: {(_useOpenAiCompat ? "OpenAI-compatible" : "Gemini")}) với {concurrencyLevel} luồng...");
 
                 var tasks = new List<Task>();
-                var queue = new ConcurrentQueue<ProcessingItem>(waitingItems);
+                var queue = new ConcurrentQueue<ProcessingItem>(targetItems);
 
                 for (int i = 0; i < concurrencyLevel; i++)
                 {
@@ -370,37 +641,59 @@ namespace AccountingOcrTest
 
                                 while (retryCount < maxRetries && !success && !_cts.Token.IsCancellationRequested)
                                 {
-                                    string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
-                                    try
+                                    if (_useOpenAiCompat)
                                     {
-                                        await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
-                                        success = true;
+                                        try
+                                        {
+                                            await ProcessImageAsync(item, openAiKey, selectedModel, currentShipper, _cts.Token, true, openAiEndpoint);
+                                            success = true;
+                                        }
+                                        catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
+                                        {
+                                            retryCount++;
+                                            lastErrorMessage = ex.Message;
+                                            Logger.Log($"[OpenAI Lỗi] File {Path.GetFileName(item.FilePath)}: {ex.Message}. Thử lại lần {retryCount}/{maxRetries}...");
+                                            if (retryCount < maxRetries)
+                                            {
+                                                await Task.Delay(2000, _cts.Token);
+                                            }
+                                        }
                                     }
-                                    catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
+                                    else
                                     {
-                                        retryCount++;
-                                        lastErrorMessage = ex.Message;
-                                        
-                                        string errText = ex.Message.ToLower();
-                                        if (errText.Contains("429") || errText.Contains("toomanyrequests") || errText.Contains("quota"))
+                                        string apiKey = await _apiKeyManager.GetNextAvailableKeyAsync(_cts.Token);
+                                        try
                                         {
-                                            _apiKeyManager.MarkKeyAsRateLimited(apiKey);
-                                            Logger.Log($"[RateLimit] Key {apiKey.Substring(0, 5)}... gặp lỗi giới hạn lượt dùng. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                            await ProcessImageAsync(item, apiKey, selectedModel, currentShipper, _cts.Token);
+                                            _apiKeyManager.RecordSuccess(apiKey);
+                                            success = true;
                                         }
-                                        else if (errText.Contains("invalid") || errText.Contains("403") || errText.Contains("bad request") || errText.Contains("400"))
+                                        catch (Exception ex) when (!_cts.Token.IsCancellationRequested)
                                         {
-                                            _apiKeyManager.MarkKeyAsError(apiKey);
-                                            Logger.Log($"[ApiKeyError] Key {apiKey.Substring(0, 5)}... gặp lỗi xác thực/cú pháp. Thử lại lần {retryCount}/{maxRetries} với key khác...");
-                                        }
-                                        else
-                                        {
-                                            _apiKeyManager.MarkKeyAsError(apiKey);
-                                            Logger.Log($"[APIError] Key {apiKey.Substring(0, 5)}... gặp lỗi kết nối: {ex.Message}. Thử lại lần {retryCount}/{maxRetries} với key khác...");
-                                        }
+                                            retryCount++;
+                                            lastErrorMessage = ex.Message;
+                                            
+                                            string errText = ex.Message.ToLower();
+                                            if (errText.Contains("429") || errText.Contains("toomanyrequests") || errText.Contains("quota"))
+                                            {
+                                                _apiKeyManager.MarkKeyAsRateLimited(apiKey);
+                                                Logger.Log($"[RateLimit] Key {apiKey.Substring(0, 5)}... gặp lỗi giới hạn lượt dùng. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                            }
+                                            else if (errText.Contains("invalid") || errText.Contains("403") || errText.Contains("bad request") || errText.Contains("400"))
+                                            {
+                                                _apiKeyManager.MarkKeyAsError(apiKey);
+                                                Logger.Log($"[ApiKeyError] Key {apiKey.Substring(0, 5)}... gặp lỗi xác thực/cú pháp. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                            }
+                                            else
+                                            {
+                                                _apiKeyManager.MarkKeyAsError(apiKey);
+                                                Logger.Log($"[APIError] Key {apiKey.Substring(0, 5)}... gặp lỗi kết nối: {ex.Message}. Thử lại lần {retryCount}/{maxRetries} với key khác...");
+                                            }
 
-                                        if (retryCount < maxRetries)
-                                        {
-                                            await Task.Delay(1500, _cts.Token);
+                                            if (retryCount < maxRetries)
+                                            {
+                                                await Task.Delay(1500, _cts.Token);
+                                            }
                                         }
                                     }
                                 }
@@ -469,6 +762,7 @@ namespace AccountingOcrTest
                 ProgressText.Visibility = Visibility.Collapsed;
 
                 ToggleUiLock(false);
+                UpdateBatchActionBar();
             }
 
             if (_cts.Token.IsCancellationRequested)
@@ -503,7 +797,14 @@ namespace AccountingOcrTest
             SettingsBtn.IsEnabled = !lockUi;
             AddImagesBtn.IsEnabled = !lockUi;
             ShipperSelector.IsEnabled = !lockUi;
+            if (ProviderSelector != null) ProviderSelector.IsEnabled = !lockUi;
             ModelSelector.IsEnabled = !lockUi;
+            if (OpenAiEndpointBox != null) OpenAiEndpointBox.IsEnabled = !lockUi;
+            if (OpenAiKeyBox != null) OpenAiKeyBox.IsEnabled = !lockUi;
+            if (OpenAiModelBox != null) OpenAiModelBox.IsEnabled = !lockUi;
+            if (OpenAiConcurrencyBox != null) OpenAiConcurrencyBox.IsEnabled = !lockUi;
+            if (OpenAiDecConcBtn != null) OpenAiDecConcBtn.IsEnabled = !lockUi;
+            if (OpenAiIncConcBtn != null) OpenAiIncConcBtn.IsEnabled = !lockUi;
             NewSessionBtn.IsEnabled = !lockUi;
             StartBtn.IsEnabled = !lockUi;
             ContinueBtn.IsEnabled = !lockUi;
@@ -543,6 +844,97 @@ namespace AccountingOcrTest
                 g.DrawImage(original, 0, 0, newWidth, newHeight);
             }
             return resized;
+        }
+
+        /// <summary>
+        /// Enhance image contrast and sharpness to make faint handwritten pen strokes
+        /// (tick marks, strike-throughs, handwritten numbers) more visible to the AI model.
+        /// This is critical for invoices where ink marks are light or overlap with printed grid lines.
+        /// </summary>
+        private static Bitmap EnhanceImageForApi(Bitmap original)
+        {
+            int w = original.Width;
+            int h = original.Height;
+            var enhanced = new Bitmap(w, h);
+
+            // Step 1: Increase contrast (factor 1.4) to make faint pen strokes stand out
+            float contrastFactor = 1.4f;
+            float contrastOffset = (1.0f - contrastFactor) / 2.0f * 255;
+
+            var contrastMatrix = new System.Drawing.Imaging.ColorMatrix(new float[][]
+            {
+                new float[] { contrastFactor, 0, 0, 0, 0 },
+                new float[] { 0, contrastFactor, 0, 0, 0 },
+                new float[] { 0, 0, contrastFactor, 0, 0 },
+                new float[] { 0, 0, 0, 1, 0 },
+                new float[] { contrastOffset / 255f, contrastOffset / 255f, contrastOffset / 255f, 0, 1 }
+            });
+
+            using (var g = Graphics.FromImage(enhanced))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                using (var attributes = new System.Drawing.Imaging.ImageAttributes())
+                {
+                    attributes.SetColorMatrix(contrastMatrix);
+                    g.DrawImage(original, new Rectangle(0, 0, w, h), 0, 0, w, h, GraphicsUnit.Pixel, attributes);
+                }
+            }
+
+            // Step 2: Apply sharpening via 3x3 convolution kernel to enhance ink edges
+            try
+            {
+                var sharpened = new Bitmap(w, h);
+                // Sharpen kernel: center=9, neighbors=-1 each
+                float[,] kernel = {
+                    { 0, -1, 0 },
+                    { -1,  5, -1 },
+                    { 0, -1, 0 }
+                };
+
+                for (int y = 1; y < h - 1; y++)
+                {
+                    for (int x = 1; x < w - 1; x++)
+                    {
+                        float rSum = 0, gSum = 0, bSum = 0;
+                        for (int ky = -1; ky <= 1; ky++)
+                        {
+                            for (int kx = -1; kx <= 1; kx++)
+                            {
+                                var pixel = enhanced.GetPixel(x + kx, y + ky);
+                                float k = kernel[ky + 1, kx + 1];
+                                rSum += pixel.R * k;
+                                gSum += pixel.G * k;
+                                bSum += pixel.B * k;
+                            }
+                        }
+                        int r = Math.Clamp((int)rSum, 0, 255);
+                        int gVal = Math.Clamp((int)gSum, 0, 255);
+                        int b = Math.Clamp((int)bSum, 0, 255);
+                        sharpened.SetPixel(x, y, System.Drawing.Color.FromArgb(r, gVal, b));
+                    }
+                }
+
+                // Copy border pixels as-is
+                for (int x = 0; x < w; x++)
+                {
+                    sharpened.SetPixel(x, 0, enhanced.GetPixel(x, 0));
+                    sharpened.SetPixel(x, h - 1, enhanced.GetPixel(x, h - 1));
+                }
+                for (int y = 0; y < h; y++)
+                {
+                    sharpened.SetPixel(0, y, enhanced.GetPixel(0, y));
+                    sharpened.SetPixel(w - 1, y, enhanced.GetPixel(w - 1, y));
+                }
+
+                enhanced.Dispose();
+                Logger.Log($"[Image Enhancement] Đã tăng tương phản (x{contrastFactor}) và làm nét ảnh {w}x{h}.");
+                return sharpened;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[Image Enhancement] Lỗi sharpen, chỉ dùng contrast: {ex.Message}");
+                return enhanced; // Fallback: return contrast-only version
+            }
         }
 
         private static void RotateImageByExif(System.Drawing.Image img)
@@ -604,7 +996,7 @@ namespace AccountingOcrTest
             }
         }
 
-        private async Task ProcessImageAsync(ProcessingItem item, string apiKey, string modelName, string shipperName, CancellationToken token)
+        private async Task ProcessImageAsync(ProcessingItem item, string apiKey, string modelName, string shipperName, CancellationToken token, bool useOpenAi = false, string openAiEndpoint = "")
         {
             token.ThrowIfCancellationRequested();
 
@@ -629,7 +1021,7 @@ namespace AccountingOcrTest
                             img.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp);
                             using (var pix = Pix.LoadFromMemory(ms.ToArray()))
                             {
-                                using (var page = engine.Process(pix, PageSegMode.AutoOsd))
+                                using (var page = engine.Process(pix, PageSegMode.OsdOnly))
                                 {
                                     using (var iterator = page.AnalyseLayout())
                                     {
@@ -669,28 +1061,65 @@ namespace AccountingOcrTest
 
                 token.ThrowIfCancellationRequested();
 
+                // Save rotated image locally to raw_material folder for subsequent previewing/zooming
+                try
+                {
+                    string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                    string targetPath = Path.Combine(targetDir, Path.GetFileName(item.FilePath));
+                    img.Save(targetPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[Save Image Lỗi] Không thể lưu ảnh vào raw_material: {ex.Message}");
+                }
+
                 // Fix #7: Resize large images before encoding for API (limit increased to 3072 for visual accuracy of handwritten marks)
                 bool needsResize = img.Width > 3072 || img.Height > 3072;
-                Bitmap apiImage = needsResize ? ResizeImageForApi(img, 3072, 3072) : img;
+                Bitmap resizedImage = needsResize ? ResizeImageForApi(img, 3072, 3072) : img;
+
+                // Enhance contrast + sharpness to make faint handwritten marks (ticks, strike-throughs) visible to the AI
+                Bitmap apiImage = EnhanceImageForApi(resizedImage);
 
                 try
                 {
                     using (var ms = new MemoryStream())
                     {
-                        var format = mimeType == "image/png" ? System.Drawing.Imaging.ImageFormat.Png : System.Drawing.Imaging.ImageFormat.Jpeg;
-                        apiImage.Save(ms, format);
+                        if (mimeType == "image/png")
+                        {
+                            apiImage.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        }
+                        else
+                        {
+                            // Use high-quality JPEG (95%) to preserve fine ink strokes
+                            // Default ImageFormat.Jpeg uses 75% quality which blurs faint handwritten marks
+                            var jpegEncoder = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
+                                .First(enc => enc.MimeType == "image/jpeg");
+                            var encoderParams = new System.Drawing.Imaging.EncoderParameters(1);
+                            encoderParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                                System.Drawing.Imaging.Encoder.Quality, 95L);
+                            apiImage.Save(ms, jpegEncoder, encoderParams);
+                        }
                         // Use GetBuffer() + Length to avoid allocating a copy array on LOH
                         base64Image = Convert.ToBase64String(ms.GetBuffer(), 0, (int)ms.Length);
                     }
                 }
                 finally
                 {
-                    // Only dispose the resized copy, not the original (which is managed by the outer using)
-                    if (needsResize) apiImage.Dispose();
+                    // Dispose the enhanced copy (always a new bitmap)
+                    apiImage.Dispose();
+                    // Only dispose the resized copy if it's different from the original
+                    if (needsResize) resizedImage.Dispose();
                 }
             }
 
-            item.Data = await CallGeminiApi(base64Image, mimeType, apiKey, modelName, token);
+            if (useOpenAi)
+            {
+                item.Data = await CallOpenAiCompatApi(base64Image, mimeType, openAiEndpoint, apiKey, modelName, token);
+            }
+            else
+            {
+                item.Data = await CallGeminiApi(base64Image, mimeType, apiKey, modelName, token);
+            }
             if (item.Data != null)
             {
                 item.Data.ten_nguoi_giao = shipperName;
@@ -765,7 +1194,26 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 - LƯU Ý QUAN TRỌNG VỀ HÓA ĐƠN CHỈ CÓ MỘT CỘT SỐ LƯỢNG: Nếu hóa đơn chỉ in một cột số lượng duy nhất (ví dụ: chỉ có một cột Số lượng / Quantity mà không chia riêng cột xuất và cột nhận), thì:
   + Nếu không có ghi chú viết tay hay ký hiệu hủy/chỉnh sửa nào bên cạnh, mặc định coi như giao đủ: sl_xuat = sl_nhan = giá trị số lượng in máy đó (sl_hong = 0).
   + Nếu có nét gạch hủy dòng đó thì sl_nhan = 0 và sl_xuat = giá trị in máy.
-  + Nếu có số lượng viết tay điều chỉnh bên cạnh thì sl_nhan = số viết tay đó và sl_xuat = giá trị in máy.";
+  + Nếu có số lượng viết tay điều chỉnh bên cạnh thì sl_nhan = số viết tay đó và sl_xuat = giá trị in máy.
+
+Bước 4: Xác định Tọa độ Vùng chữ (Bounding Box Detection) - BẮT BUỘC
+- Với mỗi dòng hàng hóa được trích xuất ở Bước 2, bạn PHẢI xác định tọa độ vùng chứa dòng chữ mặt hàng đó trên hình ảnh gốc (bao gồm cả Tên hàng, Số lượng xuất, Số lượng nhận).
+- Tọa độ này phải được chuẩn hóa về hệ tọa độ 0-1000 (tương ứng từ góc trên-trái [0,0] đến góc dưới-phải [1000, 1000]).
+- Trả về tọa độ dưới dạng một chuỗi 'y_min,x_min,y_max,x_max' trong thuộc tính `box_coords` của từng mặt hàng. Trong đó:
+  + y_min: Tọa độ cạnh trên của dòng chữ (khoảng cách từ mép trên ảnh đến dòng chữ, từ 0-1000).
+  + x_min: Tọa độ cạnh trái của dòng chữ (khoảng cách từ mép trái ảnh đến dòng chữ, từ 0-1000).
+  + y_max: Tọa độ cạnh dưới của dòng chữ (từ 0-1000).
+  + x_max: Tọa độ cạnh phải của dòng chữ (từ 0-1000).
+  Ví dụ: '245,80,270,920' (nghĩa là dòng chữ nằm ở y từ 245 đến 270, x từ 80 đến 920). Hãy đảm bảo các số này là số nguyên và phân tách nhau bằng dấu phẩy.
+
+Bước 5: TỰ KIỂM TRA KẾT QUẢ (Self-Verification) - BẮT BUỘC
+Sau khi hoàn thành Bước 2 và Bước 3, bạn PHẢI thực hiện bước kiểm tra chéo sau:
+- Đếm số dòng hàng hóa mà sl_nhan == sl_xuat (tức là giao đủ 100%).
+- NẾU TẤT CẢ các dòng đều có sl_nhan == sl_xuat (tỉ lệ giao đủ = 100%), bạn PHẢI tự hỏi: 'Có thật sự KHÔNG CÓ BẤT KỲ nét viết tay, dấu tick, số viết tay, nét gạch, hoặc ký hiệu bút mực nào trên TOÀN BỘ hóa đơn này không?'
+  + Nếu câu trả lời là CÓ (tức là bạn NHÌN THẤY bất kỳ nét mực viết tay nào trên ảnh, dù rất mờ), bạn PHẢI quay lại Bước 2 và phân tích lại TỪNG DÒNG một cách kỹ lưỡng hơn, tập trung vào vùng cột Số lượng và khu vực bên phải mỗi dòng.
+  + Chỉ khi bạn XÁC NHẬN CHẮC CHẮN rằng hóa đơn hoàn toàn chỉ có mực in máy (không có bất kỳ nét viết tay nào) thì mới được giữ nguyên kết quả 100% giao đủ.
+- Ghi lại kết quả tự kiểm tra này vào cuối trường `quy_trinh_suy_luan`.
+";
 
             var requestBody = new
             {
@@ -801,9 +1249,10 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                         { "ten_hang", new { type = "STRING" } },
                                         { "sl_xuat", new { type = "NUMBER" } },
                                         { "sl_nhan", new { type = "NUMBER" } },
-                                        { "sl_hong", new { type = "NUMBER" } }
+                                        { "sl_hong", new { type = "NUMBER" } },
+                                        { "box_coords", new { type = "STRING", description = "Tọa độ hộp giới hạn chứa dòng chữ mặt hàng này trên ảnh gốc dưới dạng 'y_min,x_min,y_max,x_max' (giá trị từ 0-1000)." } }
                                     },
-                                    required = new[] { "ten_hang", "sl_xuat", "sl_nhan", "sl_hong" }
+                                    required = new[] { "ten_hang", "sl_xuat", "sl_nhan", "sl_hong", "box_coords" }
                                 }
                             }}
                         },
@@ -847,6 +1296,385 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             }
         }
 
+        public static async Task<InvoiceData> CallOpenAiCompatApi(
+            string base64Image,
+            string mimeType,
+            string endpoint,
+            string apiKey,
+            string modelName,
+            CancellationToken token)
+        {
+            string promptText = @"Bạn là một hệ thống OCR và kiểm toán kế toán cao cấp chuyên nghiệp của Việt Nam. Nhiệm vụ của bạn là số hóa hóa đơn này với ĐỘ CHÍNH XÁC TUYỆT ĐỐI về mặt cấu trúc và nội dung. ĐẶC BIỆT CHÚ Ý: Hình ảnh có thể bị xoay ngang, xoay dọc, hoặc lộn ngược. Hãy tự động 'xoay' và định hướng lại hình ảnh trong tư duy trước khi đọc. TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ SÓT BẤT KỲ DÒNG HÀNG HÓA NÀO. Hãy dóng hàng ngang thật cẩn thận để đảm bảo Tên hàng hóa và Số lượng khớp nhau 100%, không bị trôi dòng, lệch dòng hay mất dòng.
+
+HÃY THỰC HIỆN QUY TRÌNH SUY LUẬN (CHAIN OF THOUGHT):
+BẮT BUỘC ghi toàn bộ quá trình phân tích của bạn vào trường `quy_trinh_suy_luan` trong file JSON. Đối với phần hàng hóa, bạn phải phân tích TỪNG DÒNG từ trên xuống dưới một cách tường minh, ghi rõ kết quả kiểm tra trực quan cho từng dòng:
+- Dòng đó có nét bút viết tay nào (màu xanh, màu đen, hoặc đỏ) vẽ ngang, vẽ chéo, hoặc gạch bỏ đè lên các con số (ở cột SL, Đơn giá, hoặc Thành tiền) hay không? (Lưu ý kiểm tra kỹ xem nét vẽ tay có nằm sát sạt hoặc trùng vào dòng kẻ ngang in sẵn của bảng hay không).
+- Dòng đó có dấu tick '✓' hay con số viết tay nào xác nhận số lượng nhận hay không?
+Ví dụ ghi chi tiết: 'Dòng 1 (Mầm cải củ trắng): có nét bút gạch ngang đè lên các con số 3 và 36.000 -> Bị hủy -> sl_nhan = 0', 'Dòng 2 (Mầm cải củ đỏ): có dấu tick viết tay ở cột Thực Nhận -> sl_nhan = 2', 'Dòng 3 (Mầm cải ngọt): có nét bút gạch ngang viết tay đè lên số 2 và 28.000 (nằm sát dòng kẻ bảng) -> Bị hủy -> sl_nhan = 0'.
+NẾU CÓ MỘT ĐƯỜNG KẺ DÀI KÉO TỪ DÒNG TRÊN XUỐNG DÒNG DƯỚI, BẠN PHẢI GHI NHẬN LÀ TẤT CẢ CÁC DÒNG ĐÓ ĐỀU BỊ GẠCH BỎ.
+
+
+Bước 1: Phân tích Cấu trúc Bảng và Thông tin chung
+- Ngày giao (ngay_giao): Tìm ngày giao/nhận hàng thực tế (Delivery Date / Date Received). TUYỆT ĐỐI BỎ QUA 'Ngày In' (Printed Date / Ngày In / Printed Time, ví dụ: 2026-03-24) và 'Ngày Đặt Hàng' (Order Date).
+  BẮT BUỘC TÌM KIẾM THEO ĐÚNG MỨC ĐỘ ƯU TIÊN SAU:
+  1. ƯU TIÊN CAO NHẤT: Ngày ghi viết tay trên con dấu (ví dụ: ngày ghi trên con dấu nhận hàng).
+  2. ƯU TIÊN 2: Ngày ghi viết tay bằng bút nằm rải rác (gần chữ ký, khu vực ghi chú...).
+  3. ƯU TIÊN 3: Ngày được in sẵn ở ô/cột Ngày Giao Hàng hoặc Ngày Nhận Hàng (Delivery Date / Date Received). Ví dụ cột 'DATE RECEIVED' ghi '2026 03 09'.
+  
+  CẢNH BÁO VỀ SỬA NGÀY (CHO ƯU TIÊN 1 & 2): Đôi khi con dấu đóng ngày (Ưu tiên 1) hoặc ngày viết tay (Ưu tiên 2) bị ghi nhầm theo Ngày In (ví dụ: đóng dấu nhầm ngày '24-03-2026'). Nhân viên nhận hàng phát hiện ra đã dùng bút mực viết tay ghi đè/sửa trực tiếp lên trên con dấu hoặc bên cạnh (ví dụ: khoanh tròn số '24' rồi kéo nét chéo ghi đè số '09' lên trên đầu con dấu, hoặc gạch bỏ số '24' đóng dấu nhầm rồi viết đè số '09').
+  Khi thấy có bất kỳ ký hiệu sửa đổi viết tay nào đè lên con dấu hoặc đè lên ngày cũ, bạn BẮT BUỘC phải lấy giá trị đã được sửa bằng tay đó làm ngày nhận thực tế (Ví dụ ở đây số '24' đóng dấu nhầm đã bị gạch/sửa bằng bút viết tay thành '09', kết hợp với ngày nhận hàng in sẵn máy là '03 09' ở Ưu tiên 3 -> Kết luận ngày giao thực tế phải là '09/03/2026').
+  
+  Trả về định dạng ngày giao chuẩn 'dd/MM/yyyy'. Ví dụ: '09/03/2026'.
+- Khách hàng (khach_hang): Tìm tên thương hiệu/tên thương mại chính của khách hàng (ví dụ: Aeon, Winmart, Bigc, B11, Biggreen...). BẮT BUỘC bỏ qua toàn bộ phần tiền tố/hậu tố pháp lý rườm rà như 'CÔNG TY TNHH', 'CÔNG TY CỔ PHẦN', 'CHI NHÁNH', 'MỘT THÀNH VIÊN', 'VIỆT NAM'... Ví dụ: nếu hóa đơn ghi 'CÔNG TY TNHH AEON VIỆT NAM' thì chỉ trích xuất 'Aeon'. Nếu ghi 'CÔNG TY CP THƯƠNG MẠI WINCOMMERCE' thì chỉ trích xuất 'Winmart'.
+- Điểm giao (diem_giao): Tên chi nhánh của khách hàng. ĐẶC BIỆT CHÚ Ý: Nếu trên hóa đơn có ghi MÃ CỬA HÀNG đi kèm TÊN CỬA HÀNG (ví dụ như dòng '1708 - WM HNI Lê Văn Thiêm'), bạn PHẢI trích xuất NGUYÊN VẸN toàn bộ chuỗi đó làm điểm giao (tức là lấy đầy đủ cả mã và tên: '1708 - WM HNI Lê Văn Thiêm'). Nếu không có mã cửa hàng, thì lấy tên chi nhánh ngắn gọn như bình thường (ví dụ: 'Xuân Thủy', 'Ciputra'). Thường thông tin này nằm ở phần vị trí/địa chỉ điểm giao.
+
+Bước 2: Phân tích Thị giác Chuyên sâu và Nhận biết Ký hiệu Viết tay (Ink-to-Text & Symbol Analysis) - QUAN TRỌNG NHẤT
+- Phân tách rõ ràng giữa mực in máy và mực viết tay (mực màu xanh, đen mờ, đỏ hoặc nét bút viết tay).
+- MỖI DÒNG HÀNG HÓA PHẢI ĐƯỢC PHÂN TÍCH ĐỘC LẬP. Không được suy đoán kết quả dòng này dựa trên dòng khác. Phải có BẰNG CHỨNG THỊ GIÁC CỤ THỂ cho từng dòng.
+- Quét qua từng dòng dữ liệu hàng hóa và áp dụng QUY TẮC theo THỨ TỰ ƯU TIÊN SAU (rule trên THẮNG rule dưới):
+
+  ĐẶC BIỆT CHÚ Ý ĐỐI VỚI HÓA ĐƠN CÓ CỘT ""THỰC NHẬN"" (như hóa đơn GTech/Easymart):
+  - Khi hóa đơn có cột ""THỰC NHẬN"" được kiểm nhận bằng dấu tích:
+    + Những dòng được giao thường sẽ có một dấu tích ""✓"" hoặc số lượng thực nhận viết tay rất rõ ở cột ""THỰC NHẬN"".
+    + Những dòng BỊ HỦY hoặc KHÔNG GIAO thường sẽ BỊ GẠCH NGANG đè lên số lượng in máy (ở cột SL hoặc cột Thành tiền), và cột ""THỰC NHẬN"" của dòng đó sẽ để TRỐNG (không có dấu tick ✓ hay số viết tay).
+    + Bạn phải đối chiếu kỹ lưỡng: nếu một dòng hàng hóa có số lượng xuất in sẵn (sl_xuat > 0) nhưng cột ""THỰC NHẬN"" trống trơn VÀ có bất kỳ nét gạch ngang/gạch chéo nào viết tay đè lên số lượng/đơn giá (kể cả nét gạch cực kỳ mảnh, nằm sát/trùng dòng kẻ bảng), bạn PHẢI xác định dòng đó BỊ HỦY và gán sl_nhan = 0.
+
+  ƯU TIÊN CAO NHẤT - Rule A: Dấu tích '✓' kèm con số viết tay rõ ràng (ví dụ: '✓ 05', '✓ 5', '✓ 10'...):
+     -> ĐÂY LÀ KÝ HIỆU XÁC NHẬN GIAO THỰC TẾ. -> sl_nhan = <con số viết tay đó>.
+     -> Rule này LUÔN THẮNG mọi rule khác. Dù dòng đó có bị đường kẻ đi qua, NẾU CÓ ✓ kèm số thì vẫn lấy số đó làm sl_nhan.
+
+  ƯU TIÊN 2 - Rule B: Đường gạch bỏ / hủy giao. BẤT KỲ đường chữ 'Z', nét gạch chéo 'X', nét gạch ngang '-', nét gạch chéo '/', nét kẻ dọc '|', nét mũi tên (->), hoặc đường gạch tay chéo dài. Nét gạch CÓ THỂ vắt qua cột ĐVT, Đơn giá, hoặc Thành tiền. Chỉ cần TRÊN DÒNG ĐÓ bị nét mực gạch xuyên qua VÀ KHÔNG CÓ dấu ✓ kèm số:
+     -> sl_nhan = 0.
+     ĐẶC BIỆT CẢNH BÁO ĐƯỜNG KẺ NGANG TRÙNG DÒNG KẺ BẢNG: Một kiểu gạch hủy dòng phổ biến là vẽ một nét bút mực nằm ngang kéo dài cắt qua các con số ở cột Số lượng (SL), Thực Nhận, Đơn Giá và Thành Tiền (ví dụ: dòng STT 1 'Mầm cải củ trắng' và dòng STT 3 'Mầm cải ngọt' đều có một nét bút kẻ ngang đè lên các con số số lượng, đơn giá và thành tiền của dòng đó). Nét gạch ngang viết tay này có thể nằm sát hoặc trùng với dòng kẻ bảng in sẵn. Hãy kiểm tra thật kỹ các chữ số này, nếu thấy có nét mực viết tay nằm đè lên hoặc cắt ngang qua các con số đó (ngay cả khi nét vẽ rất mảnh hoặc gần trùng dòng kẻ bảng), bạn BẮT BUỘC phải xác định đó là dòng BỊ HỦY BỎ và đặt sl_nhan = 0.
+     CẢNH BÁO CỰC KỲ QUAN TRỌNG VỀ PHẠM VI ĐƯỜNG KẺ: Khi thấy một đường gạch chéo dài, bạn phải XÁC NHẬN CHÍNH XÁC BẰNG THỊ GIÁC rằng đường đó THỰC SỰ ĐI QUA dòng nào. TUYỆT ĐỐI KHÔNG ĐƯỢC SUY ĐOÁN hoặc NGOẠI SUY rằng đường kẻ kéo dài hơn thực tế. Ví dụ: nếu đường kẻ kết thúc tại dòng 100 thì KHÔNG ĐƯỢC gán sl_nhan=0 cho dòng 110, 120, 130. Chỉ những dòng mà mắt thường nhìn thấy có nét mực ĐI XUYÊN QUA mới được đánh dấu hủy.
+     ĐẶC BIỆT CHÚ Ý VỚI KÝ HIỆU HỦY VIẾT TAY: Các đường vẽ tay có hình dạng gạch ngang ngắn '-', gạch lượn sóng '~', nét gạch ngang mờ hoặc nét viết tay vẽ ngang/chéo nằm ở cột checkbox/kiểm nhận của dòng (mà không đi kèm số hay dấu tick nào) đều được tính là gạch hủy dòng đó -> sl_nhan = 0.
+     LƯU Ý VỀ VỊ TRÍ NÉT MỰC: Nét gạch hủy (đường gạch ngang '-', gạch sóng '~', nét gạch chéo '/') thường chỉ được ký hiệu ngắn gọn ở cột 'Số lượng' hoặc phần khoảng trống kiểm hàng bên trái số lượng, chứ không nhất thiết phải gạch ngang qua toàn bộ tên mặt hàng hay đơn giá. Chỉ cần có bất kỳ nét gạch ngắn, nét gạch chéo hoặc ký hiệu hủy viết tay nào tương tự xuất hiện trên dòng đó (kể cả chỉ ở cột Số lượng hay cột Stt), và không có dấu tick xác nhận nhận hàng, thì bắt buộc phải ghi nhận dòng đó đã bị hủy -> sl_nhan = 0.
+
+  ƯU TIÊN 3 - Rule C (MẶC ĐỊNH): Không có bất kỳ nét bút viết tay nào (chỉ có mực in máy):
+     -> Giao đầy đủ. -> sl_nhan = sl_xuat.
+     LƯU Ý: Đây là TRƯỜNG HỢP MẶC ĐỊNH. Nếu một dòng không bị gạch bỏ và không có ✓, thì PHẢI giữ nguyên sl_nhan = sl_xuat. KHÔNG ĐƯỢC gán sl_nhan = 0 trừ khi có BẰNG CHỨNG THỊ GIÁC rõ ràng của nét gạch bỏ TRÊN CHÍNH DÒNG ĐÓ.
+
+  Rule D: Nếu số lượng viết tay hoặc in sẵn CÓ DẤU TRỪ (số âm, ví dụ: -2, -5...), điều này có nghĩa là 'nợ hàng'. Ghi nhận CHÍNH XÁC giá trị âm đó. Được phép ghi nhận số âm.
+
+Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
+- Với mỗi mặt hàng, bạn phải có sl_xuat (Số lượng in trên hóa đơn) và sl_nhan (Số lượng giao thực tế, tính toán từ Bước 2).
+- Tự động tính toán: sl_hong = sl_xuat - sl_nhan. Trả về đúng giá trị toán học này. Chú ý có thể sl_hong > 0 hoặc = 0 hoặc đôi khi sl_nhan lớn hơn dẫn tới âm. Đảm bảo tính toán chính xác.
+- LƯU Ý QUAN TRỌNG VỀ HÓA ĐƠN CHỈ CÓ MỘT CỘT SỐ LƯỢNG: Nếu hóa đơn chỉ in một cột số lượng duy nhất (ví dụ: chỉ có một cột Số lượng / Quantity mà không chia riêng cột xuất và cột nhận), thì:
+  + Nếu không có ghi chú viết tay hay ký hiệu hủy/chỉnh sửa nào bên cạnh, mặc định coi như giao đủ: sl_xuat = sl_nhan = giá trị số lượng in máy đó (sl_hong = 0).
+  + Nếu có nét gạch hủy dòng đó thì sl_nhan = 0 và sl_xuat = giá trị in máy.
+  + Nếu có số lượng viết tay điều chỉnh bên cạnh thì sl_nhan = số viết tay đó và sl_xuat = giá trị in máy.
+
+Bước 4: Xác định Tọa độ Vùng chữ (Bounding Box Detection) - BẮT BUỘC
+- Với mỗi dòng hàng hóa được trích xuất ở Bước 2, bạn PHẢI xác định tọa độ vùng chứa dòng chữ mặt hàng đó trên hình ảnh gốc (bao gồm cả Tên hàng, Số lượng xuất, Số lượng nhận).
+- Tọa độ này phải được chuẩn hóa về hệ tọa độ 0-1000 (tương ứng từ góc trên-trái [0,0] đến góc dưới-phải [1000, 1000]).
+- Trả về tọa độ dưới dạng một chuỗi 'y_min,x_min,y_max,x_max' trong thuộc tính `box_coords` của từng mặt hàng. Trong đó:
+  + y_min: Tọa độ cạnh trên của dòng chữ (khoảng cách từ mép trên ảnh đến dòng chữ, từ 0-1000).
+  + x_min: Tọa độ cạnh trái của dòng chữ (khoảng cách từ mép trái ảnh đến dòng chữ, từ 0-1000).
+  + y_max: Tọa độ cạnh dưới của dòng chữ (từ 0-1000).
+  + x_max: Tọa độ cạnh phải của dòng chữ (từ 0-1000).
+  Ví dụ: '245,80,270,920' (nghĩa là dòng chữ nằm ở y từ 245 đến 270, x từ 80 đến 920). Hãy đảm bảo các số này là số nguyên và phân tách nhau bằng dấu phẩy.
+
+Bước 5: TỰ KIỂM TRA KẾT QUẢ (Self-Verification) - BẮT BUỘC
+Sau khi hoàn thành Bước 2 và Bước 3, bạn PHẢI thực hiện bước kiểm tra chéo sau:
+- Đếm số dòng hàng hóa mà sl_nhan == sl_xuat (tức là giao đủ 100%).
+- NẾU TẤT CẢ các dòng đều có sl_nhan == sl_xuat (tỉ lệ giao đủ = 100%), bạn PHẢI tự hỏi: 'Có thật sự KHÔNG CÓ BẤT KỲ nét viết tay, dấu tick, số viết tay, nét gạch, hoặc ký hiệu bút mực nào trên TOÀN BỘ hóa đơn này không?'
+  + Nếu câu trả lời là CÓ (tức là bạn NHÌN THẤY bất kỳ nét mực viết tay nào trên ảnh, dù rất mờ), bạn PHẢI quay lại Bước 2 và phân tích lại TỪNG DÒNG một cách kỹ lưỡng hơn, tập trung vào vùng cột Số lượng và khu vực bên phải mỗi dòng.
+  + Chỉ khi bạn XÁC NHẬN CHẮC CHẮN rằng hóa đơn hoàn toàn chỉ có mực in máy (không có bất kỳ nét viết tay nào) thì mới được giữ nguyên kết quả 100% giao đủ.
+- Ghi lại kết quả tự kiểm tra này vào cuối trường `quy_trinh_suy_luan`.
+
+YÊU CẦU ĐỊNH DẠNG ĐẦU RA (OUTPUT FORMAT):
+Bạn PHẢI trả về DUY NHẤT một chuỗi JSON hợp lệ (không kèm markdown ```json hay giải thích ngoài JSON), tuân thủ chính xác cấu trúc sau:
+{
+  ""quy_trinh_suy_luan"": ""Trình bày chi tiết phân tích từng dòng..."",
+  ""ngay_giao"": ""dd/MM/yyyy"",
+  ""khach_hang"": ""Tên khách hàng"",
+  ""diem_giao"": ""Điểm giao"",
+  ""danh_sach_hang_hoa"": [
+    {
+      ""ten_hang"": ""Tên mặt hàng"",
+      ""sl_xuat"": 10,
+      ""sl_nhan"": 10,
+      ""sl_hong"": 0,
+      ""box_coords"": ""y_min,x_min,y_max,x_max""
+    }
+  ]
+}
+";
+
+            // Normalize endpoint URL
+            string url = endpoint.Trim().TrimEnd('/');
+            if (!url.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!url.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+                {
+                    url += "/v1";
+                }
+                url += "/chat/completions";
+            }
+
+            var requestBody = new
+            {
+                model = modelName,
+                messages = new object[]
+                {
+                    new
+                    {
+                        role = "user",
+                        content = new object[]
+                        {
+                            new { type = "text", text = promptText },
+                            new
+                            {
+                                type = "image_url",
+                                image_url = new
+                                {
+                                    url = $"data:{mimeType};base64,{base64Image}"
+                                }
+                            }
+                        }
+                    }
+                },
+                response_format = new { type = "json_object" },
+                temperature = 0.1
+            };
+
+            string jsonBody = JsonSerializer.Serialize(requestBody);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, token);
+            string responseStr = await response.Content.ReadAsStringAsync(token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Logger.Log($"[OpenAI API Lỗi] HTTP {response.StatusCode}: {responseStr}");
+                string errMsg = $"OpenAI API trả về lỗi {(int)response.StatusCode}";
+                try
+                {
+                    using var errDoc = JsonDocument.Parse(responseStr);
+                    if (errDoc.RootElement.TryGetProperty("error", out var errObj))
+                    {
+                        if (errObj.TryGetProperty("message", out var msgElem))
+                        {
+                            errMsg += $": {msgElem.GetString()}";
+                        }
+                    }
+                }
+                catch { }
+                throw new Exception(errMsg);
+            }
+
+            using (JsonDocument doc = JsonDocument.Parse(responseStr))
+            {
+                var root = doc.RootElement;
+                if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                {
+                    var firstChoice = choices[0];
+                    if (firstChoice.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var contentElem))
+                    {
+                        string text = contentElem.GetString() ?? "";
+                        Logger.Log($"[OpenAI API Result]\n{text}\n-----------------------");
+
+                        // Strip markdown code fences if model returned ```json ... ```
+                        string cleanJson = text.Trim();
+                        if (cleanJson.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
+                        {
+                            cleanJson = cleanJson.Substring(7);
+                        }
+                        else if (cleanJson.StartsWith("```"))
+                        {
+                            cleanJson = cleanJson.Substring(3);
+                        }
+                        if (cleanJson.EndsWith("```"))
+                        {
+                            cleanJson = cleanJson.Substring(0, cleanJson.Length - 3);
+                        }
+                        cleanJson = cleanJson.Trim();
+
+                        // Extract JSON substring if surrounded by extra text
+                        int firstBrace = cleanJson.IndexOf('{');
+                        int lastBrace = cleanJson.LastIndexOf('}');
+                        if (firstBrace >= 0 && lastBrace > firstBrace)
+                        {
+                            cleanJson = cleanJson.Substring(firstBrace, lastBrace - firstBrace + 1);
+                        }
+
+                        InvoiceData data = JsonSerializer.Deserialize<InvoiceData>(cleanJson, _jsonOptions);
+                        return data;
+                    }
+                    else
+                    {
+                        throw new Exception("OpenAI API không trả về nội dung tin nhắn (message.content trống).");
+                    }
+                }
+                else
+                {
+                    throw new Exception("OpenAI API không trả về choices nào.");
+                }
+            }
+        }
+
+        private void ProviderSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (GeminiModelPanel == null || OpenAiConfigPanel == null) return;
+
+            bool isOpenAi = ProviderSelector.SelectedIndex == 1;
+            GeminiModelPanel.Visibility = isOpenAi ? Visibility.Collapsed : Visibility.Visible;
+            OpenAiConfigPanel.Visibility = isOpenAi ? Visibility.Visible : Visibility.Collapsed;
+            if (SettingsBtn != null) SettingsBtn.Visibility = isOpenAi ? Visibility.Collapsed : Visibility.Visible;
+            _useOpenAiCompat = isOpenAi;
+
+            if (_isInitialized)
+            {
+                SaveOpenAiConfig();
+            }
+        }
+
+        private void MainTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (e.Source != MainTabControl) return;
+            if (_isSwitchingTab) return;
+            if (!_isInitialized) return;
+
+            // Block navigating to any other tab if no Excel file has been loaded
+            if (MainTabControl.SelectedIndex > 0)
+            {
+                if (!EnsureExcelLoaded())
+                {
+                    _isSwitchingTab = true;
+                    try
+                    {
+                        MainTabControl.SelectedIndex = 0;
+                    }
+                    finally
+                    {
+                        _isSwitchingTab = false;
+                    }
+                    return;
+                }
+            }
+
+            // When switching to "Xử lý OCR" tab (index 1), restore saved provider config
+            if (MainTabControl.SelectedIndex == 1)
+            {
+                LoadOpenAiConfig();
+            }
+        }
+
+        private void LoadOpenAiConfig()
+        {
+            try
+            {
+                if (File.Exists(OpenAiConfigFilePath))
+                {
+                    string json = File.ReadAllText(OpenAiConfigFilePath);
+                    var cfg = JsonSerializer.Deserialize<OpenAiConfig>(json, _jsonOptions);
+                    if (cfg != null)
+                    {
+                        if (OpenAiEndpointBox != null) OpenAiEndpointBox.Text = cfg.Endpoint ?? "";
+                        if (OpenAiKeyBox != null) OpenAiKeyBox.Text = cfg.ApiKey ?? "";
+                        if (OpenAiModelBox != null && !string.IsNullOrWhiteSpace(cfg.ModelName))
+                            OpenAiModelBox.Text = cfg.ModelName;
+                        if (OpenAiConcurrencyBox != null && cfg.Concurrency > 0)
+                            OpenAiConcurrencyBox.Text = cfg.Concurrency.ToString();
+
+                        if (ProviderSelector != null && !string.IsNullOrWhiteSpace(cfg.Provider))
+                        {
+                            bool matched = false;
+                            for (int i = 0; i < ProviderSelector.Items.Count; i++)
+                            {
+                                if (ProviderSelector.Items[i] is ComboBoxItem item &&
+                                    string.Equals(item.Content?.ToString(), cfg.Provider, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    ProviderSelector.SelectedIndex = i;
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if (!matched)
+                            {
+                                ProviderSelector.SelectedIndex = 0;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[OpenAI Config] Lỗi tải file {OpenAiConfigFilePath}: {ex.Message}");
+            }
+        }
+
+        private void SaveOpenAiConfig()
+        {
+            try
+            {
+                int concurrency = 15;
+                if (OpenAiConcurrencyBox != null && int.TryParse(OpenAiConcurrencyBox.Text?.Trim(), out int c) && c > 0)
+                {
+                    concurrency = c;
+                }
+
+                string currentProvider = (ProviderSelector?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Gemini";
+
+                var cfg = new OpenAiConfig
+                {
+                    Provider = currentProvider,
+                    Endpoint = OpenAiEndpointBox?.Text?.Trim() ?? "",
+                    ApiKey = OpenAiKeyBox?.Text?.Trim() ?? "",
+                    ModelName = OpenAiModelBox?.Text?.Trim() ?? "gpt-4o",
+                    Concurrency = concurrency
+                };
+                string json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(OpenAiConfigFilePath, json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[OpenAI Config] Lỗi lưu file {OpenAiConfigFilePath}: {ex.Message}");
+            }
+        }
+
+        private void OpenAiDecConcBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (OpenAiConcurrencyBox == null) return;
+            if (int.TryParse(OpenAiConcurrencyBox.Text?.Trim(), out int val))
+            {
+                if (val > 1) OpenAiConcurrencyBox.Text = (val - 1).ToString();
+            }
+            else
+            {
+                OpenAiConcurrencyBox.Text = "15";
+            }
+        }
+
+        private void OpenAiIncConcBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (OpenAiConcurrencyBox == null) return;
+            if (int.TryParse(OpenAiConcurrencyBox.Text?.Trim(), out int val))
+            {
+                if (val < 30) OpenAiConcurrencyBox.Text = (val + 1).ToString();
+            }
+            else
+            {
+                OpenAiConcurrencyBox.Text = "15";
+            }
+        }
+
+        private void OpenAiConcurrencyBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (OpenAiConcurrencyBox == null) return;
+            if (int.TryParse(OpenAiConcurrencyBox.Text?.Trim(), out int val))
+            {
+                OpenAiConcurrencyBox.Text = Math.Clamp(val, 1, 30).ToString();
+            }
+            else
+            {
+                OpenAiConcurrencyBox.Text = "15";
+            }
+        }
+
         private void NewSessionBtn_Click(object sender, RoutedEventArgs e)
         {
             // Chặn tạo phiên mới nếu batch đang chạy
@@ -864,6 +1692,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             }
 
             _items.Clear();
+            UpdateBatchActionBar();
             ProgressBar.Visibility = Visibility.Collapsed;
             ProgressText.Visibility = Visibility.Collapsed;
             CancelBtn.Visibility = Visibility.Collapsed;
@@ -911,6 +1740,39 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             catch (Exception ex)
             {
                 Logger.Log($"[App] Lỗi lưu file shippers.json: {ex.Message}");
+            }
+        }
+
+        private void ShipperSelector_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Delete && ShipperSelector.IsDropDownOpen)
+            {
+                var selectedShipper = ShipperSelector.SelectedItem as string;
+                if (!string.IsNullOrEmpty(selectedShipper))
+                {
+                    var result = MessageBox.Show($"Bạn có chắc chắn muốn xóa người giao hàng '{selectedShipper}' khỏi danh sách gợi ý?", "Xác nhận xóa", MessageBoxButton.YesNo);
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        _shippers.Remove(selectedShipper);
+                        SaveShippers();
+                        e.Handled = true;
+                    }
+                }
+            }
+        }
+
+        private void DeleteShipperItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is string shipper)
+            {
+                e.Handled = true; // Prevent click from bubbling up and selecting the item/closing dropdown
+
+                var result = MessageBox.Show($"Bạn có chắc chắn muốn xóa người giao hàng '{shipper}' khỏi danh sách gợi ý?", "Xác nhận xóa", MessageBoxButton.YesNo);
+                if (result == MessageBoxResult.Yes)
+                {
+                    _shippers.Remove(shipper);
+                    SaveShippers();
+                }
             }
         }
 
@@ -1006,6 +1868,27 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             }
         }
 
+        private bool EnsureExcelLoaded()
+        {
+            var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
+            bool isLoaded = activeConfig != null 
+                && !string.IsNullOrWhiteSpace(activeConfig.LocalPath) 
+                && File.Exists(activeConfig.LocalPath)
+                && !string.IsNullOrEmpty(RefFilePathText?.Text) 
+                && RefFilePathText.Text != "Chưa chọn file Excel tham chiếu.";
+
+            if (!isLoaded)
+            {
+                MessageBox.Show(
+                    "Vui lòng nạp hoặc chọn một file Excel tại Trang chủ trước khi thực hiện thao tác!",
+                    "Chưa nạp file Excel",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return false;
+            }
+            return true;
+        }
+
         private async void HomeImportFile_Click(object sender, RoutedEventArgs e)
         {
             OpenFileDialog openFileDialog = new OpenFileDialog
@@ -1079,10 +1962,10 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         }
 
                         _excelConfigs.Add(configItem);
-                        SaveExcelConfigs();
 
                         // Set active status
                         SetActiveExcelConfig(targetPath);
+                        SaveExcelConfigs();
 
                         // Load data
                         await LoadBothSheetsAsync(refSheet, salesSheet);
@@ -1168,6 +2051,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
                     // Set active status
                     SetActiveExcelConfig(config.LocalPath);
+                    SaveExcelConfigs();
 
                     await LoadBothSheetsAsync(config.RefSheet, config.SalesSheet);
 
@@ -1243,11 +2127,69 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 }
             }
 
+            DeleteAssociatedInvoiceImages(config.FileName);
             _excelConfigs.Remove(config);
+        }
+
+        private void DeleteAssociatedInvoiceImages(string excelFileName)
+        {
+            if (string.IsNullOrEmpty(excelFileName)) return;
+            try
+            {
+                var filesToDelete = new List<string>();
+                using (var connection = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = "SELECT DISTINCT file_name FROM staging_items WHERE excel_file_name = $excelName";
+                        cmd.Parameters.Add(new DuckDBParameter("$excelName", excelFileName));
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string imgName = reader.GetString(0);
+                                if (!string.IsNullOrEmpty(imgName))
+                                {
+                                    filesToDelete.Add(imgName);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                string rawDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                foreach (var imgName in filesToDelete)
+                {
+                    string fullPath = Path.Combine(rawDir, imgName);
+                    if (File.Exists(fullPath))
+                    {
+                        try { File.Delete(fullPath); } catch {}
+                    }
+                }
+
+                // Delete DB staging records too
+                using (var connection = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = "DELETE FROM staging_items WHERE excel_file_name = $excelName";
+                        cmd.Parameters.Add(new DuckDBParameter("$excelName", excelFileName));
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[Dọn dẹp ảnh] Lỗi khi dọn dẹp ảnh cho file {excelFileName}: {ex.Message}");
+            }
         }
 
         private async void ChangeSheets_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
             string filePath = RefFilePathText.Text;
             if (string.IsNullOrEmpty(filePath) || filePath == "Chưa chọn file Excel tham chiếu." || !File.Exists(filePath))
                 return;
@@ -1501,6 +2443,18 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                             cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS match_score DOUBLE DEFAULT 1.0;";
                             cmd.ExecuteNonQuery();
 
+                            cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS sync_batch_id VARCHAR;";
+                            cmd.ExecuteNonQuery();
+
+                            cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS synced_at TIMESTAMP;";
+                            cmd.ExecuteNonQuery();
+
+                            cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS excel_file_name VARCHAR;";
+                            cmd.ExecuteNonQuery();
+
+                            cmd.CommandText = "ALTER TABLE staging_items ADD COLUMN IF NOT EXISTS box_coords VARCHAR;";
+                            cmd.ExecuteNonQuery();
+
                             // Clean up items synced > 30 days ago and reclaim physical disk space
                             try
                             {
@@ -1542,7 +2496,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         connection.Open();
                         using (var cmd = connection.CreateCommand())
                         {
-                            cmd.CommandText = "SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, match_score FROM staging_items WHERE status != 'Synced' ORDER BY created_at DESC;";
+                            cmd.CommandText = "SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, match_score, box_coords FROM staging_items WHERE status != 'Synced' ORDER BY created_at DESC;";
                             using (var reader = cmd.ExecuteReader())
                             {
                                 while (reader.Read())
@@ -1563,7 +2517,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                         SlNhan = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
                                         SlHong = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
                                         GhiChu = reader.IsDBNull(13) ? "" : reader.GetString(13),
-                                        MatchScore = reader.IsDBNull(14) ? 1.0 : reader.GetDouble(14)
+                                        MatchScore = reader.IsDBNull(14) ? 1.0 : reader.GetDouble(14),
+                                        BoxCoords = reader.IsDBNull(15) ? "" : reader.GetString(15)
                                     };
                                     _stagingItems.Add(item);
                                 }
@@ -1571,7 +2526,11 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                         }
                     }
                 }
-                PreviewDataGrid.ItemsSource = _stagingItems;
+                RunAuditRules();
+                _stagingItemsView = CollectionViewSource.GetDefaultView(_stagingItems);
+                _stagingItemsView.Filter = PreviewStagingFilter;
+                PreviewDataGrid.ItemsSource = _stagingItemsView;
+                UpdatePreviewFilterLists();
             }
             catch (Exception ex)
             {
@@ -1605,7 +2564,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                     sl_nhan = $sl_nhan, 
                                     sl_hong = $sl_hong, 
                                     ghi_chu = $ghi_chu,
-                                    match_score = $match_score
+                                    match_score = $match_score,
+                                    box_coords = $box_coords
                                 WHERE id = $id;";
                             
                             cmd.Parameters.Add(new DuckDBParameter("ngay_giao", item.NgayGiao ?? ""));
@@ -1620,6 +2580,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                             cmd.Parameters.Add(new DuckDBParameter("sl_hong", item.SlHong));
                             cmd.Parameters.Add(new DuckDBParameter("ghi_chu", item.GhiChu ?? ""));
                             cmd.Parameters.Add(new DuckDBParameter("match_score", item.MatchScore));
+                            cmd.Parameters.Add(new DuckDBParameter("box_coords", item.BoxCoords ?? ""));
                             cmd.Parameters.Add(new DuckDBParameter("id", item.Id));
 
                             cmd.ExecuteNonQuery();
@@ -1635,6 +2596,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private async void ContinueBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
             var processedSuccessItems = _items.Where(x => x.Status == ProcessStatus.Success && x.Data != null).ToList();
             if (processedSuccessItems.Count == 0)
             {
@@ -1709,8 +2672,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                         using (var cmd = conn.CreateCommand())
                                         {
                                             cmd.CommandText = @"
-                                                INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status, match_score) 
-                                                VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status, $match_score);";
+                                                INSERT INTO staging_items (id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, status, match_score, box_coords) 
+                                                VALUES ($id, $file_name, $ngay_giao, $khach_hang, $diem_giao, $nguoi_giao, $ten_hang_goc, $ten_hang_khop, $hst, $don_vi, $sl_xuat, $sl_nhan, $sl_hong, $ghi_chu, $status, $match_score, $box_coords);";
 
                                             cmd.Parameters.Add(new DuckDBParameter("id", Guid.NewGuid().ToString()));
                                             cmd.Parameters.Add(new DuckDBParameter("file_name", r.fileName));
@@ -1728,6 +2691,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                                             cmd.Parameters.Add(new DuckDBParameter("ghi_chu", ""));
                                             cmd.Parameters.Add(new DuckDBParameter("status", "Success"));
                                             cmd.Parameters.Add(new DuckDBParameter("match_score", r.bestScore));
+                                            cmd.Parameters.Add(new DuckDBParameter("box_coords", r.itemRow.box_coords ?? ""));
 
                                             cmd.ExecuteNonQuery();
                                         }
@@ -1856,6 +2820,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     stagingItem2.MatchScore = 1.0;
 
                     UpdateStagingItemInDb(stagingItem2);
+                    RunAuditRules();
                 }), System.Windows.Threading.DispatcherPriority.Background);
             }
         }
@@ -1886,6 +2851,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private async void CommitToExcelBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
             var itemsToCommit = _stagingItems.Where(x => x.IsSelected).ToList();
             if (itemsToCommit.Count == 0)
             {
@@ -1915,7 +2882,7 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                     // File is accessible
                 }
             }
-            catch (System.IO.IOException ex)
+            catch (System.IO.IOException)
             {
                 MessageBox.Show($"Tệp Excel đang được mở hoặc bị khóa bởi ứng dụng khác (ví dụ: Microsoft Excel).\n\nVui lòng đóng tệp Excel tại:\n{activeConfig.LocalPath}\n\nSau đó thử lại!", "Tệp đang bị khóa", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -2011,7 +2978,10 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                             using (var cmd = conn.CreateCommand())
                             {
                                 var idList = string.Join(", ", itemsToCommit.Select(x => $"'{x.Id}'"));
-                                cmd.CommandText = $"UPDATE staging_items SET status = 'Synced' WHERE id IN ({idList});";
+                                string batchId = Guid.NewGuid().ToString();
+                                cmd.CommandText = $"UPDATE staging_items SET status = 'Synced', sync_batch_id = $batchId, synced_at = now(), excel_file_name = $excelFileName WHERE id IN ({idList});";
+                                cmd.Parameters.Add(new DuckDBParameter("batchId", batchId));
+                                cmd.Parameters.Add(new DuckDBParameter("excelFileName", activeConfig.FileName));
                                 cmd.ExecuteNonQuery();
                             }
                         }
@@ -2043,6 +3013,8 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
 
         private void ExportExcelBtn_Click(object sender, RoutedEventArgs e)
         {
+            if (!EnsureExcelLoaded()) return;
+
             var activeConfig = _excelConfigs.FirstOrDefault(x => x.IsActive);
             if (activeConfig == null)
             {
@@ -2069,17 +3041,123 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
                 {
                     // Copy local copy to chosen location
                     File.Copy(activeConfig.LocalPath, saveFileDialog.FileName, true);
-                    MessageBox.Show($"Đã xuất tệp Excel thành công tại:\n{saveFileDialog.FileName}", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                    var exportImagesResult = MessageBox.Show(
+                        "Bạn có muốn xuất kèm thư mục chứa hình ảnh hóa đơn đã đối soát (được đổi tên theo hóa đơn) không?",
+                        "Xuất kèm ảnh hóa đơn",
+                        MessageBoxButton.YesNo
+                    );
+
+                    if (exportImagesResult == MessageBoxResult.Yes)
+                    {
+                        ExportInvoiceImages(activeConfig.FileName, saveFileDialog.FileName);
+                        MessageBox.Show(
+                            $"Đã xuất tệp Excel và các hình ảnh hóa đơn kèm theo thành công tại:\n{saveFileDialog.FileName}\n\nThư mục ảnh: {Path.GetFileNameWithoutExtension(saveFileDialog.FileName)}_Images",
+                            "Thành công",
+                            MessageBoxButton.OK
+                        );
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Đã xuất tệp Excel thành công tại:\n{saveFileDialog.FileName}", "Thành công", MessageBoxButton.OK);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Lỗi khi xuất tệp Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show($"Lỗi khi xuất tệp Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK);
                 }
+            }
+        }
+
+        private void ExportInvoiceImages(string excelFileName, string destExcelPath)
+        {
+            try
+            {
+                var imageMapping = new List<(string OriginalFile, string NewName)>();
+                using (var connection = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                {
+                    connection.Open();
+                    using (var cmd = connection.CreateCommand())
+                    {
+                        cmd.CommandText = "SELECT DISTINCT file_name, nguoi_giao, ngay_giao, khach_hang, diem_giao FROM staging_items WHERE excel_file_name = $excelName";
+                        cmd.Parameters.Add(new DuckDBParameter("$excelName", excelFileName));
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string origFile = reader.IsDBNull(0) ? "" : reader.GetString(0);
+                                string shipper = reader.IsDBNull(1) ? "" : reader.GetString(1);
+                                string dateStr = reader.IsDBNull(2) ? "" : reader.GetString(2);
+                                string customer = reader.IsDBNull(3) ? "" : reader.GetString(3);
+                                string delivery = reader.IsDBNull(4) ? "" : reader.GetString(4);
+
+                                if (!string.IsNullOrEmpty(origFile))
+                                {
+                                    string newName = $"[{shipper}] - {dateStr} - {customer} - {delivery}";
+                                    imageMapping.Add((origFile, newName));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (imageMapping.Count == 0) return;
+
+                string destFolder = Path.Combine(
+                    Path.GetDirectoryName(destExcelPath) ?? "",
+                    Path.GetFileNameWithoutExtension(destExcelPath) + "_Images"
+                );
+
+                if (!Directory.Exists(destFolder))
+                {
+                    Directory.CreateDirectory(destFolder);
+                }
+
+                string rawDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                int copiedCount = 0;
+
+                foreach (var map in imageMapping)
+                {
+                    string origFullPath = Path.Combine(rawDir, map.OriginalFile);
+                    if (File.Exists(origFullPath))
+                    {
+                        string safeName = map.NewName;
+                        foreach (char c in Path.GetInvalidFileNameChars())
+                        {
+                            safeName = safeName.Replace(c, '_');
+                        }
+                        
+                        string ext = Path.GetExtension(map.OriginalFile);
+                        string destFullPath = Path.Combine(destFolder, safeName + ext);
+
+                        try
+                        {
+                            File.Copy(origFullPath, destFullPath, true);
+                            copiedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"[Xuất ảnh] Lỗi sao chép {origFullPath} -> {destFullPath}: {ex.Message}");
+                        }
+                    }
+                }
+
+                Logger.Log($"[Xuất ảnh] Đã xuất {copiedCount} ảnh hóa đơn vào {destFolder}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[Xuất ảnh] Lỗi chung: {ex.Message}");
             }
         }
 
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
+            try
+            {
+                SaveOpenAiConfig();
+            }
+            catch { }
+
             _cts?.Dispose();
             if (_tessEngine.Values != null)
             {
@@ -2120,6 +3198,793 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             }
             return columnName;
         }
+
+        private void InlineDeleteBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is ProcessingItem item)
+            {
+                if (item.Status == ProcessStatus.Processing)
+                {
+                    MessageBox.Show("Không thể xóa ảnh khi đang trong quá trình xử lý.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var result = MessageBox.Show(
+                    $"Bạn có chắc chắn muốn xóa ảnh '{item.SmartName}' khỏi danh sách chờ xử lý không?", 
+                    "Xác nhận xóa ảnh", 
+                    MessageBoxButton.YesNo, 
+                    MessageBoxImage.Question);
+
+                if (result == MessageBoxResult.Yes)
+                {
+                    if (ItemsListBox.SelectedItem == item)
+                    {
+                        ItemsListBox.SelectedItem = null;
+                        PreviewImage.Source = null;
+                    }
+                    _items.Remove(item);
+                    UpdateBatchActionBar();
+                }
+            }
+        }
+
+        private void LoadSyncHistoryFromDb()
+        {
+            _syncBatches.Clear();
+            try
+            {
+                lock (DbWriteLock)
+                {
+                    string connStr = $"Data Source={StagingDbPath}";
+                    using (var connection = new DuckDBConnection(connStr))
+                    {
+                        connection.Open();
+                        using (var cmd = connection.CreateCommand())
+                        {
+                            cmd.CommandText = @"
+                                SELECT 
+                                    sync_batch_id, 
+                                    MAX(synced_at) as synced_at, 
+                                    COALESCE(MAX(excel_file_name), '') as excel_file_name, 
+                                    MAX(nguoi_giao) as nguoi_giao, 
+                                    COUNT(*) as row_count,
+                                    MAX(status) as status
+                                FROM staging_items 
+                                WHERE sync_batch_id IS NOT NULL AND sync_batch_id != ''
+                                GROUP BY sync_batch_id
+                                ORDER BY synced_at DESC;";
+                            using (var reader = cmd.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    var batch = new SyncBatchItem
+                                    {
+                                        SyncBatchId = reader.GetString(0),
+                                        SyncedAt = reader.GetDateTime(1),
+                                        ConfigName = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                                        Shipper = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                                        RowCount = reader.GetInt32(4),
+                                        Status = reader.IsDBNull(5) ? "" : reader.GetString(5)
+                                    };
+                                    _syncBatches.Add(batch);
+                                }
+                            }
+                        }
+                    }
+                }
+                UpdateHistoryFilterLists();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[DuckDB Lỗi] LoadSyncHistoryFromDb: {ex.Message}");
+                MessageBox.Show($"Lỗi tải lịch sử ghi sổ: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void ReloadHistoryBtn_Click(object sender, RoutedEventArgs e)
+        {
+            LoadSyncHistoryFromDb();
+        }
+
+        private async void HistoryRollback_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureExcelLoaded()) return;
+
+            if (sender is Button btn && btn.Tag is SyncBatchItem batch)
+            {
+                var confirm = MessageBox.Show(
+                    $"Bạn có chắc chắn muốn HOÀN TÁC đợt ghi sổ ngày {batch.SyncedAt:dd/MM/yyyy HH:mm:ss} ({batch.RowCount} dòng) không?\n\n" +
+                    "Hành động này sẽ:\n" +
+                    "1. Tìm và xóa các dòng tương ứng ra khỏi Sheet Bán hàng trong file Excel.\n" +
+                    "2. Khôi phục các dòng này về tab 'Xem trước & Đối soát' để bạn có thể sửa đổi hoặc ghi sổ lại.",
+                    "Xác nhận hoàn tác",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (confirm != MessageBoxResult.Yes) return;
+
+                var itemsInBatch = new List<StagingItem>();
+                try
+                {
+                    lock (DbWriteLock)
+                    {
+                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                        {
+                            conn.Open();
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                cmd.CommandText = @"
+                                    SELECT id, file_name, ngay_giao, khach_hang, diem_giao, nguoi_giao, ten_hang_goc, ten_hang_khop, hst, don_vi, sl_xuat, sl_nhan, sl_hong, ghi_chu, match_score 
+                                    FROM staging_items 
+                                    WHERE sync_batch_id = $batchId;";
+                                cmd.Parameters.Add(new DuckDBParameter("batchId", batch.SyncBatchId));
+                                using (var reader = cmd.ExecuteReader())
+                                {
+                                    while (reader.Read())
+                                    {
+                                        itemsInBatch.Add(new StagingItem
+                                        {
+                                            Id = reader.GetString(0),
+                                            FileName = reader.GetString(1),
+                                            NgayGiao = reader.IsDBNull(2) ? "" : reader.GetString(2),
+                                            KhachHang = reader.IsDBNull(3) ? "" : reader.GetString(3),
+                                            DiemGiao = reader.IsDBNull(4) ? "" : reader.GetString(4),
+                                            NguoiGiao = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                                            TenHangGoc = reader.IsDBNull(6) ? "" : reader.GetString(6),
+                                            TenHangKhop = reader.IsDBNull(7) ? "" : reader.GetString(7),
+                                            Hst = reader.IsDBNull(8) ? "" : reader.GetString(8),
+                                            DonVi = reader.IsDBNull(9) ? "" : reader.GetString(9),
+                                            SlXuat = reader.IsDBNull(10) ? 0 : reader.GetDouble(10),
+                                            SlNhan = reader.IsDBNull(11) ? 0 : reader.GetDouble(11),
+                                            SlHong = reader.IsDBNull(12) ? 0 : reader.GetDouble(12),
+                                            GhiChu = reader.IsDBNull(13) ? "" : reader.GetString(13),
+                                            MatchScore = reader.IsDBNull(14) ? 1.0 : reader.GetDouble(14)
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception dbEx)
+                {
+                    MessageBox.Show($"Lỗi khi đọc dữ liệu đợt ghi sổ từ DB: {dbEx.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                if (itemsInBatch.Count == 0)
+                {
+                    MessageBox.Show("Không tìm thấy dòng dữ liệu nào thuộc đợt ghi sổ này trong cơ sở dữ liệu.", "Thông báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var config = _excelConfigs.FirstOrDefault(x => x.FileName == batch.ConfigName);
+                if (config == null)
+                {
+                    config = _excelConfigs.FirstOrDefault(x => x.IsActive);
+                }
+
+                if (config == null)
+                {
+                    MessageBox.Show($"Không tìm thấy cấu hình Excel tương ứng với file '{batch.ConfigName}'. Vui lòng kiểm tra lại cấu hình ở Trang chủ.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                if (!File.Exists(config.LocalPath))
+                {
+                    MessageBox.Show($"Không tìm thấy file Excel cục bộ tại: {config.LocalPath}\nHủy thao tác hoàn tác.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                ShowRefLoading("Đang thực hiện hoàn tác trên file Excel...");
+                bool excelSuccess = false;
+                try
+                {
+                    await Task.Run(() =>
+                    {
+                        using (var workbook = new ClosedXML.Excel.XLWorkbook(config.LocalPath))
+                        {
+                            var salesSheet = workbook.Worksheet(config.SalesSheet);
+                            if (salesSheet == null)
+                            {
+                                throw new Exception($"Không tìm thấy sheet '{config.SalesSheet}' trong file Excel.");
+                            }
+
+                            var headerRow = salesSheet.Row(1);
+                            int colDate = 0, colCustomer = 0, colDiemGiao = 0, colShipper = 0, colHst = 0, colXuat = 0, colHong = 0;
+                            int lastCol = salesSheet.LastColumnUsed()?.ColumnNumber() ?? 20;
+
+                            for (int col = 1; col <= lastCol; col++)
+                            {
+                                string header = headerRow.Cell(col).GetString().Trim().ToLower();
+                                if (header.Contains("ngày") || header.Contains("ngay")) colDate = col;
+                                else if (header.Contains("khách") || header.Contains("khach")) colCustomer = col;
+                                else if (header.Contains("điểm") || header.Contains("diem")) colDiemGiao = col;
+                                else if (header.Contains("giao") && (header.Contains("người") || header.Contains("nguoi") || header.Contains("shipper"))) colShipper = col;
+                                else if (header.Contains("hst") || header.Contains("mã")) colHst = col;
+                                else if (header.Contains("số lượng xuất") || header.Contains("sl xuất") || header.Contains("sl xuat")) colXuat = col;
+                                else if (header.Contains("hỏng") || header.Contains("hong")) colHong = col;
+                            }
+
+                            if (colDate == 0) colDate = 1;
+                            if (colCustomer == 0) colCustomer = 2;
+                            if (colDiemGiao == 0) colDiemGiao = 3;
+                            if (colShipper == 0) colShipper = 4;
+                            if (colHst == 0) colHst = 5;
+                            if (colXuat == 0) colXuat = 6;
+                            if (colHong == 0) colHong = 7;
+
+                            int lastRow = salesSheet.LastRowUsed()?.RowNumber() ?? 1;
+                            var pendingItems = new List<StagingItem>(itemsInBatch);
+                            int deleteCount = 0;
+
+                            for (int r = lastRow; r >= 2; r--)
+                            {
+                                var row = salesSheet.Row(r);
+
+                                string xlDate = row.Cell(colDate).GetString().Trim();
+                                string xlCustomer = row.Cell(colCustomer).GetString().Trim();
+                                string xlDiemGiao = row.Cell(colDiemGiao).GetString().Trim();
+                                string xlShipper = row.Cell(colShipper).GetString().Trim();
+                                string xlHst = row.Cell(colHst).GetString().Trim();
+                                
+                                double xlXuat = 0;
+                                double.TryParse(row.Cell(colXuat).GetString(), out xlXuat);
+                                
+                                double xlHong = 0;
+                                double.TryParse(row.Cell(colHong).GetString(), out xlHong);
+
+                                var match = pendingItems.FirstOrDefault(item =>
+                                    item.NgayGiao == xlDate &&
+                                    item.KhachHang == xlCustomer &&
+                                    item.DiemGiao == xlDiemGiao &&
+                                    item.NguoiGiao == xlShipper &&
+                                    item.Hst == xlHst &&
+                                    Math.Abs(item.SlXuat - xlXuat) < 0.001 &&
+                                    Math.Abs(item.SlHong - xlHong) < 0.001);
+
+                                if (match != null)
+                                {
+                                    row.Delete();
+                                    pendingItems.Remove(match);
+                                    deleteCount++;
+                                }
+                            }
+
+                            workbook.Save();
+                        }
+                    });
+                    excelSuccess = true;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Lỗi khi xóa dòng trong file Excel: {ex.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    HideRefLoading();
+                }
+
+                if (!excelSuccess) return;
+
+                try
+                {
+                    lock (DbWriteLock)
+                    {
+                        using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                        {
+                            conn.Open();
+                            using (var cmd = conn.CreateCommand())
+                            {
+                                cmd.CommandText = @"
+                                    UPDATE staging_items 
+                                    SET status = 'Success', sync_batch_id = NULL, synced_at = NULL 
+                                    WHERE sync_batch_id = $batchId;";
+                                cmd.Parameters.Add(new DuckDBParameter("batchId", batch.SyncBatchId));
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                    }
+
+                    MessageBox.Show($"Hoàn tác thành công! Đã xóa các dòng tương ứng trong file Excel và đưa {batch.RowCount} dòng về hàng đợi đối soát.", "Thành công", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                    LoadStagingItemsFromDb();
+                    LoadSyncHistoryFromDb();
+
+                    await LoadBothSheetsAsync(config.RefSheet, config.SalesSheet);
+
+                    MainTabControl.SelectedIndex = 2;
+                }
+                catch (Exception dbEx)
+                {
+                    MessageBox.Show($"Lỗi cập nhật trạng thái trong DuckDB: {dbEx.Message}", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        // ==========================================
+        // STAGING PREVIEW & RECONCILE FILTERS
+        // ==========================================
+        private bool PreviewStagingFilter(object obj)
+        {
+            if (obj is StagingItem item)
+            {
+                // 1. Search text filter
+                string query = (PreviewSearchBox.Text ?? "").Trim().ToLower();
+                if (!string.IsNullOrEmpty(query))
+                {
+                    bool matchSearch = (item.TenHangGoc ?? "").ToLower().Contains(query) ||
+                                       (item.TenHangKhop ?? "").ToLower().Contains(query) ||
+                                       (item.Hst ?? "").ToLower().Contains(query);
+                    if (!matchSearch) return false;
+                }
+
+                // 2. Date filter
+                if (PreviewDatePicker.SelectedDate.HasValue)
+                {
+                    string selectedDateStr = PreviewDatePicker.SelectedDate.Value.ToString("dd/MM/yyyy");
+                    if (item.NgayGiao != selectedDateStr) return false;
+                }
+
+                // 3. Shipper filter
+                if (PreviewShipperCombo.SelectedValue is string shipperVal && !string.IsNullOrEmpty(shipperVal))
+                {
+                    if (item.NguoiGiao != shipperVal) return false;
+                }
+
+                // 4. Customer filter
+                if (PreviewCustomerCombo.SelectedValue is string customerVal && !string.IsNullOrEmpty(customerVal))
+                {
+                    if (item.KhachHang != customerVal) return false;
+                }
+
+                // 5. Delivery point filter
+                if (PreviewDeliveryCombo.SelectedValue is string deliveryVal && !string.IsNullOrEmpty(deliveryVal))
+                {
+                    if (item.DiemGiao != deliveryVal) return false;
+                }
+
+                return true;
+            }
+            return false;
+        }
+
+        private void RunAuditRules()
+        {
+            var branchToCustomerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using (var conn = new DuckDBConnection($"Data Source={StagingDbPath}"))
+                {
+                    conn.Open();
+                    using (var cmd = conn.CreateCommand())
+                    {
+                        cmd.CommandText = "SELECT DISTINCT diem_giao, khach_hang FROM staging_items WHERE status = 'Synced' AND diem_giao IS NOT NULL AND diem_giao != '';";
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                string dg = reader.GetString(0);
+                                string kh = reader.GetString(1);
+                                if (!branchToCustomerMap.ContainsKey(dg))
+                                {
+                                    branchToCustomerMap[dg] = kh;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"[Audit Engine] Lỗi tải bản đồ chi nhánh - khách hàng: {ex.Message}");
+            }
+
+            foreach (var item in _stagingItems)
+            {
+                var warnings = new List<string>();
+
+                // Rule 1: Excess Delivery
+                if (item.SlNhan > item.SlXuat)
+                {
+                    string gc = (item.GhiChu ?? "").ToLower();
+                    if (!gc.Contains("no") && !gc.Contains("tra") && !gc.Contains("bu") && !gc.Contains("muon") && !gc.Contains("gui"))
+                    {
+                        warnings.Add("Số thực nhận lớn hơn số lượng xuất (có thể ghi nhầm)");
+                    }
+                }
+
+                // Rule 2: High Damage Rate
+                if (item.SlHong > 0 && item.SlXuat > 0 && (item.SlHong / item.SlXuat) >= 0.3)
+                {
+                    warnings.Add($"Tỉ lệ hàng hỏng quá cao ({ (item.SlHong / item.SlXuat) * 100:F0}% tổng số lượng xuất)");
+                }
+
+                // Rule 3: Date Discrepancy
+                if (DateTime.TryParseExact(item.NgayGiao, "dd/MM/yyyy", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out DateTime parsedDate))
+                {
+                    double diffDays = Math.Abs((parsedDate - DateTime.Now).TotalDays);
+                    if (diffDays > 30)
+                    {
+                        warnings.Add($"Ngày giao ({item.NgayGiao}) lệch quá xa so với ngày hiện tại ({diffDays:F0} ngày)");
+                    }
+                }
+                else if (!string.IsNullOrEmpty(item.NgayGiao))
+                {
+                    warnings.Add($"Ngày giao không đúng định dạng dd/MM/yyyy: {item.NgayGiao}");
+                }
+
+                // Rule 4: Customer Discrepancy
+                if (!string.IsNullOrEmpty(item.DiemGiao) && branchToCustomerMap.TryGetValue(item.DiemGiao, out string historicalCustomer))
+                {
+                    if (!historicalCustomer.Equals(item.KhachHang, StringComparison.OrdinalIgnoreCase))
+                    {
+                        warnings.Add($"Chi nhánh này lịch sử thuộc về khách hàng '{historicalCustomer}', nhưng hiện tại ghi nhận '{item.KhachHang}'");
+                    }
+                }
+
+                item.AuditWarning = warnings.Count > 0 ? string.Join("\n• ", warnings.Prepend("Cảnh báo nghiệp vụ:")) : "";
+            }
+        }
+
+        private void PreviewDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            PreviewInvoiceImage.Source = null;
+
+            // Reset zoom & pan transforms
+            PreviewImageScaleTransform.ScaleX = 1.0;
+            PreviewImageScaleTransform.ScaleY = 1.0;
+            PreviewImageTranslateTransform.X = 0;
+            PreviewImageTranslateTransform.Y = 0;
+
+            if (PreviewDataGrid.SelectedItem is StagingItem item)
+            {
+                string targetDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RawMaterialDirName);
+                string imgPath = Path.Combine(targetDir, item.FileName);
+
+                if (File.Exists(imgPath))
+                {
+                    try
+                    {
+                        var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+                        bitmap.BeginInit();
+                        bitmap.UriSource = new Uri(imgPath);
+                        bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                        bitmap.EndInit();
+                        bitmap.Freeze();
+
+                        PreviewInvoiceImage.Source = bitmap;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"[Preview Ảnh Lỗi] Không thể tải ảnh: {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private System.Windows.Point _previewPanStartPoint;
+        private double _previewStartTranslateX;
+        private double _previewStartTranslateY;
+        private bool _previewIsPanning = false;
+
+        private void ImageContainer_MouseWheel(object sender, MouseWheelEventArgs e)
+        {
+            if (PreviewInvoiceImage.Source == null) return;
+
+            double zoomFactor = e.Delta > 0 ? 1.15 : 1.0 / 1.15;
+            
+            double newScaleX = PreviewImageScaleTransform.ScaleX * zoomFactor;
+            double newScaleY = PreviewImageScaleTransform.ScaleY * zoomFactor;
+
+            if (newScaleX >= 0.1 && newScaleX <= 15.0)
+            {
+                PreviewImageScaleTransform.ScaleX = newScaleX;
+                PreviewImageScaleTransform.ScaleY = newScaleY;
+            }
+            e.Handled = true;
+        }
+
+        private void ImageContainer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (PreviewInvoiceImage.Source == null) return;
+
+            _previewIsPanning = true;
+            _previewPanStartPoint = e.GetPosition(ImageContainer);
+            _previewStartTranslateX = PreviewImageTranslateTransform.X;
+            _previewStartTranslateY = PreviewImageTranslateTransform.Y;
+            ImageContainer.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void ImageContainer_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (_previewIsPanning)
+            {
+                _previewIsPanning = false;
+                ImageContainer.ReleaseMouseCapture();
+                e.Handled = true;
+            }
+        }
+
+        private void ImageContainer_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_previewIsPanning) return;
+
+            System.Windows.Point currentPoint = e.GetPosition(ImageContainer);
+            double deltaX = currentPoint.X - _previewPanStartPoint.X;
+            double deltaY = currentPoint.Y - _previewPanStartPoint.Y;
+
+            PreviewImageTranslateTransform.X = _previewStartTranslateX + deltaX;
+            PreviewImageTranslateTransform.Y = _previewStartTranslateY + deltaY;
+            e.Handled = true;
+        }
+
+        private void UpdatePreviewFilterLists()
+        {
+            if (_isUpdatingPreviewFilters) return;
+            _isUpdatingPreviewFilters = true;
+
+            try
+            {
+                string currentShipper = PreviewShipperCombo.SelectedValue as string ?? "";
+                string currentCustomer = PreviewCustomerCombo.SelectedValue as string ?? "";
+                string currentDelivery = PreviewDeliveryCombo.SelectedValue as string ?? "";
+
+                var query = (PreviewSearchBox.Text ?? "").Trim().ToLower();
+                var dateMatchedItems = _stagingItems.Where(item => 
+                {
+                    if (!string.IsNullOrEmpty(query))
+                    {
+                        bool matchSearch = (item.TenHangGoc ?? "").ToLower().Contains(query) ||
+                                           (item.TenHangKhop ?? "").ToLower().Contains(query) ||
+                                           (item.Hst ?? "").ToLower().Contains(query);
+                        if (!matchSearch) return false;
+                    }
+                    if (PreviewDatePicker.SelectedDate.HasValue)
+                    {
+                        string selectedDateStr = PreviewDatePicker.SelectedDate.Value.ToString("dd/MM/yyyy");
+                        return item.NgayGiao == selectedDateStr;
+                    }
+                    return true;
+                }).ToList();
+
+                // 1. Shippers list
+                var uniqueShippers = dateMatchedItems
+                    .Select(x => x.NguoiGiao)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .Select(x => new FilterItem { Value = x, Text = x })
+                    .ToList();
+                uniqueShippers.Insert(0, new FilterItem { Value = "", Text = "Tất cả người giao" });
+                PreviewShipperCombo.ItemsSource = uniqueShippers;
+
+                if (uniqueShippers.Any(x => x.Value == currentShipper))
+                    PreviewShipperCombo.SelectedValue = currentShipper;
+                else
+                    PreviewShipperCombo.SelectedIndex = 0;
+
+                // 2. Customers list
+                string activeShipper = PreviewShipperCombo.SelectedValue as string ?? "";
+                var shipperMatchedItems = dateMatchedItems.Where(item => 
+                    string.IsNullOrEmpty(activeShipper) || item.NguoiGiao == activeShipper
+                ).ToList();
+
+                var uniqueCustomers = shipperMatchedItems
+                    .Select(x => x.KhachHang)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .Select(x => new FilterItem { Value = x, Text = x })
+                    .ToList();
+                uniqueCustomers.Insert(0, new FilterItem { Value = "", Text = "Tất cả đơn vị" });
+                PreviewCustomerCombo.ItemsSource = uniqueCustomers;
+
+                if (uniqueCustomers.Any(x => x.Value == currentCustomer))
+                    PreviewCustomerCombo.SelectedValue = currentCustomer;
+                else
+                    PreviewCustomerCombo.SelectedIndex = 0;
+
+                // 3. Delivery points list
+                string activeCustomer = PreviewCustomerCombo.SelectedValue as string ?? "";
+                var customerMatchedItems = shipperMatchedItems.Where(item => 
+                    string.IsNullOrEmpty(activeCustomer) || item.KhachHang == activeCustomer
+                ).ToList();
+
+                var uniqueDeliveries = customerMatchedItems
+                    .Select(x => x.DiemGiao)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .Select(x => new FilterItem { Value = x, Text = x })
+                    .ToList();
+                uniqueDeliveries.Insert(0, new FilterItem { Value = "", Text = "Tất cả chi nhánh" });
+                PreviewDeliveryCombo.ItemsSource = uniqueDeliveries;
+
+                if (uniqueDeliveries.Any(x => x.Value == currentDelivery))
+                    PreviewDeliveryCombo.SelectedValue = currentDelivery;
+                else
+                    PreviewDeliveryCombo.SelectedIndex = 0;
+            }
+            finally
+            {
+                _isUpdatingPreviewFilters = false;
+            }
+        }
+
+        private void PreviewSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdatePreviewFilterLists();
+            _stagingItemsView?.Refresh();
+        }
+
+        private void PreviewDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdatePreviewFilterLists();
+            _stagingItemsView?.Refresh();
+        }
+
+        private void PreviewShipperCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingPreviewFilters) return;
+            UpdatePreviewFilterLists();
+            _stagingItemsView?.Refresh();
+        }
+
+        private void PreviewCustomerCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingPreviewFilters) return;
+            UpdatePreviewFilterLists();
+            _stagingItemsView?.Refresh();
+        }
+
+        private void PreviewDeliveryCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingPreviewFilters) return;
+            _stagingItemsView?.Refresh();
+        }
+
+        private void ResetPreviewFilters_Click(object sender, RoutedEventArgs e)
+        {
+            PreviewSearchBox.Text = "";
+            PreviewDatePicker.SelectedDate = null;
+            PreviewShipperCombo.SelectedIndex = 0;
+            PreviewCustomerCombo.SelectedIndex = 0;
+            PreviewDeliveryCombo.SelectedIndex = 0;
+
+            UpdatePreviewFilterLists();
+            _stagingItemsView?.Refresh();
+        }
+
+
+        // ==========================================
+        // SYNC HISTORY FILTERS
+        // ==========================================
+        private bool HistoryFilter(object obj)
+        {
+            if (obj is SyncBatchItem batch)
+            {
+                // 1. Search text filter
+                string query = (HistorySearchBox.Text ?? "").Trim().ToLower();
+                if (!string.IsNullOrEmpty(query))
+                {
+                    bool matchSearch = (batch.ConfigName ?? "").ToLower().Contains(query) ||
+                                       (batch.Shipper ?? "").ToLower().Contains(query);
+                    if (!matchSearch) return false;
+                }
+
+                // 2. Date filter
+                if (HistoryDatePicker.SelectedDate.HasValue)
+                {
+                    if (batch.SyncedAt.Date != HistoryDatePicker.SelectedDate.Value.Date) return false;
+                }
+
+                // 3. Shipper filter
+                if (HistoryShipperCombo.SelectedValue is string shipperVal && !string.IsNullOrEmpty(shipperVal))
+                {
+                    if (batch.Shipper != shipperVal) return false;
+                }
+
+                return true;
+            }
+            return false;
+        }
+
+        private void UpdateHistoryFilterLists()
+        {
+            if (_isUpdatingHistoryFilters) return;
+            _isUpdatingHistoryFilters = true;
+
+            try
+            {
+                string currentShipper = HistoryShipperCombo.SelectedValue as string ?? "";
+
+                var query = (HistorySearchBox.Text ?? "").Trim().ToLower();
+                var dateMatchedBatches = _syncBatches.Where(batch => 
+                {
+                    if (!string.IsNullOrEmpty(query))
+                    {
+                        bool matchSearch = (batch.ConfigName ?? "").ToLower().Contains(query) ||
+                                           (batch.Shipper ?? "").ToLower().Contains(query);
+                        if (!matchSearch) return false;
+                    }
+                    if (HistoryDatePicker.SelectedDate.HasValue)
+                    {
+                        return batch.SyncedAt.Date == HistoryDatePicker.SelectedDate.Value.Date;
+                    }
+                    return true;
+                }).ToList();
+
+                // Update Shippers list based on remaining matches
+                var uniqueShippers = dateMatchedBatches
+                    .Select(x => x.Shipper)
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Distinct()
+                    .OrderBy(x => x)
+                    .Select(x => new FilterItem { Value = x, Text = x })
+                    .ToList();
+                uniqueShippers.Insert(0, new FilterItem { Value = "", Text = "Tất cả người giao" });
+                HistoryShipperCombo.ItemsSource = uniqueShippers;
+
+                if (uniqueShippers.Any(x => x.Value == currentShipper))
+                    HistoryShipperCombo.SelectedValue = currentShipper;
+                else
+                    HistoryShipperCombo.SelectedIndex = 0;
+            }
+            finally
+            {
+                _isUpdatingHistoryFilters = false;
+            }
+        }
+
+        private void HistorySearchBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            UpdateHistoryFilterLists();
+            _syncBatchesView?.Refresh();
+        }
+
+        private void HistoryDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateHistoryFilterLists();
+            _syncBatchesView?.Refresh();
+        }
+
+        private void HistoryShipperCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isUpdatingHistoryFilters) return;
+            _syncBatchesView?.Refresh();
+        }
+
+        private void ResetHistoryFilters_Click(object sender, RoutedEventArgs e)
+        {
+            HistorySearchBox.Text = "";
+            HistoryDatePicker.SelectedDate = null;
+            HistoryShipperCombo.SelectedIndex = 0;
+
+            UpdateHistoryFilterLists();
+            _syncBatchesView?.Refresh();
+        }
+    }
+
+    public class FilterItem
+    {
+        public string Value { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+    }
+
+    public class SyncBatchItem
+    {
+        public string SyncBatchId { get; set; } = string.Empty;
+        public DateTime SyncedAt { get; set; }
+        public string ConfigName { get; set; } = string.Empty;
+        public string Shipper { get; set; } = string.Empty;
+        public int RowCount { get; set; }
+        public string Status { get; set; } = string.Empty;
+
+        public string StatusText => Status == "Synced" ? "Đã ghi sổ" : "Đã hoàn tác";
+        public string StatusColor => Status == "Synced" ? "#16a34a" : "#dc2626";
+        public bool CanRollback => Status == "Synced";
     }
 
     public static class FuzzyMatcher
@@ -2396,4 +4261,4 @@ Bước 3: Đối soát tính toán (Tự động tính Số lượng hỏng)
             throw new NotImplementedException();
         }
     }
-}
+}

@@ -88,6 +88,13 @@ namespace AccountingOcrTest
             set { _sl_hong = value; OnPropertyChanged(); }
         }
 
+        private string _box_coords = "";
+        public string box_coords
+        {
+            get => _box_coords;
+            set { _box_coords = value; OnPropertyChanged(); }
+        }
+
         private void RecalculateHong()
         {
             sl_hong = sl_xuat - sl_nhan;
@@ -113,6 +120,7 @@ namespace AccountingOcrTest
         private ProcessStatus _status;
         private InvoiceData _data;
         private string _errorMessage;
+        private bool _isChecked;
 
         public string FilePath { get; set; }
         
@@ -138,6 +146,12 @@ namespace AccountingOcrTest
         {
             get => _errorMessage;
             set { _errorMessage = value; OnPropertyChanged(); }
+        }
+
+        public bool IsChecked
+        {
+            get => _isChecked;
+            set { _isChecked = value; OnPropertyChanged(); }
         }
 
         public string StatusColor
@@ -189,6 +203,11 @@ namespace AccountingOcrTest
         private KeyStatus _status;
         private int _requestsInLastMinute;
 
+        private int _totalRequests;
+        private int _successfulRequests;
+        private int _failedRequests;
+        private double _estimatedCost;
+
         public string Key { get; set; }
         public DateTime LastUsed { get; set; }
         public DateTime WindowStart { get; set; }
@@ -196,13 +215,63 @@ namespace AccountingOcrTest
         public KeyStatus Status
         {
             get => _status;
-            set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusColor)); }
+            set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusColor)); OnPropertyChanged(nameof(CooldownSecondsLeft)); }
         }
 
         public int RequestsInLastMinute
         {
             get => _requestsInLastMinute;
             set { _requestsInLastMinute = value; OnPropertyChanged(); }
+        }
+
+        public int TotalRequests
+        {
+            get => _totalRequests;
+            set { _totalRequests = value; OnPropertyChanged(); OnPropertyChanged(nameof(SuccessRate)); }
+        }
+
+        public int SuccessfulRequests
+        {
+            get => _successfulRequests;
+            set { _successfulRequests = value; OnPropertyChanged(); OnPropertyChanged(nameof(SuccessRate)); }
+        }
+
+        public int FailedRequests
+        {
+            get => _failedRequests;
+            set { _failedRequests = value; OnPropertyChanged(); OnPropertyChanged(nameof(SuccessRate)); }
+        }
+
+        public double EstimatedCost
+        {
+            get => _estimatedCost;
+            set { _estimatedCost = value; OnPropertyChanged(); }
+        }
+
+        public string SuccessRate
+        {
+            get
+            {
+                if (TotalRequests == 0) return "0%";
+                double rate = (double)SuccessfulRequests / TotalRequests * 100;
+                return $"{rate:F1}%";
+            }
+        }
+
+        public int CooldownSecondsLeft
+        {
+            get
+            {
+                if (Status != KeyStatus.RateLimited) return 0;
+                double elapsed = (DateTime.Now - WindowStart).TotalSeconds;
+                int remaining = 60 - (int)elapsed;
+                return remaining > 0 ? remaining : 0;
+            }
+        }
+
+        public void RaiseCooldownChanged()
+        {
+            OnPropertyChanged(nameof(CooldownSecondsLeft));
         }
 
         public string StatusColor
@@ -294,6 +363,8 @@ namespace AccountingOcrTest
         private string _ghiChu = "";
         private bool _isSelected = true;
         private double _matchScore = 1.0;
+        private string _boxCoords = "";
+        private string _auditWarning = "";
 
         public string Id { get => _id; set { _id = value; OnPropertyChanged(); } }
         public string FileName { get => _fileName; set { _fileName = value; OnPropertyChanged(); } }
@@ -329,6 +400,18 @@ namespace AccountingOcrTest
         public string GhiChu { get => _ghiChu; set { _ghiChu = value; OnPropertyChanged(); } }
         public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(); } }
         public double MatchScore { get => _matchScore; set { _matchScore = value; OnPropertyChanged(); } }
+        public string BoxCoords { get => _boxCoords; set { _boxCoords = value; OnPropertyChanged(); } }
+        public string AuditWarning 
+        { 
+            get => _auditWarning; 
+            set 
+            { 
+                _auditWarning = value; 
+                OnPropertyChanged(); 
+                OnPropertyChanged(nameof(HasWarning)); 
+            } 
+        }
+        public bool HasWarning => !string.IsNullOrEmpty(AuditWarning);
 
         private void RecalculateHong()
         {
@@ -340,6 +423,15 @@ namespace AccountingOcrTest
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
+    }
+
+    public class OpenAiConfig
+    {
+        public string Provider { get; set; } = "Gemini";
+        public string Endpoint { get; set; } = "https://api.openai.com";
+        public string ApiKey { get; set; } = "";
+        public string ModelName { get; set; } = "gpt-4o";
+        public int Concurrency { get; set; } = 15;
     }
 }
 

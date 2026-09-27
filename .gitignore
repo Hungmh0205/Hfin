@@ -1,31 +1,86 @@
-# Build outputs and object files
-[Bb]in/
-[Oo]bj/
+# ====================================================================
+# .gitignore cho dự án Accounting OCR (HFin)
+# ====================================================================
 
-# Local databases and WAL files
+# 1. API Keys & Cấu hình dịch vụ AI (Chứa secret API key, token, endpoint)
+openai_config.json
+**/openai_config.json
+*openai_config*.json
+apikeys.txt
+apikeys.json
+*.key
+.env
+.env.*
+secrets.json
+
+# 2. Cấu hình Excel & Dữ liệu Người giao hàng (Chứa đường dẫn tệp, tên cá nhân)
+excel_configs.json
+excel_configs.json.bak
+**/excel_configs.json
+**/excel_configs.json.bak
+*excel_config*.json*
+shippers.json
+**/shippers.json
+
+# Cho phép mẫu ví dụ (template files)
+!*.example.json
+!**/*.example.json
+
+# 3. Dữ liệu bảng tính Excel, sổ sách bán hàng cá nhân/doanh nghiệp
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+~$*.xlsx
+~$*.xlsm
+~$*.xls
+
+# 4. Ảnh hóa đơn & thư mục tài liệu thô (Chứa hóa đơn thực tế của khách hàng)
+raw_material/
+**/raw_material/
+*_Images/
+**/*_Images/
+*.jpg
+*.jpeg
+*.png
+*.webp
+!AccountingOcrTest/logo.png
+!logo.png
+
+# 5. Cơ sở dữ liệu cục bộ (DuckDB / SQLite chứa dữ liệu đối soát & ghi sổ)
 *.db
 *.db-wal
 *.db-journal
 *.db.wal
+*.sqlite
+*.sqlite3
+accounting_staging.db
+**/accounting_staging.db
+test_staging.db
+**/test_staging.db
 
-# Log files
+# 6. Nhật ký hoạt động & File tạm (Logs & Backups)
 *.log
 app.log
+**/app.log
+*.bak
+*.tmp
+diff.txt
+**/diff.txt
 
-# User-specific files
+# 7. File build, biên dịch và cài đặt
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+InstallerOutput/
+*.iss
+
+# 8. Cấu hình IDE cá nhân (Visual Studio / VS Code / Rider)
+.vs/
+.vscode/
+.idea/
 *.user
 *.suo
 *.userosscache
 *.sln.docstates
-.vs/
-
-# Excel temporary/lock files
-~$*.xlsx
-~$*.xlsm
-*.bak
-
-# Local raw materials directory (temporary excel files copied locally)
-raw_material/
-
-# API keys containing sensitive data
-apikeys.json

@@ -14,12 +14,34 @@ namespace AccountingOcrTest
         private const string KeysFilePath = "apikeys.json";
         private const int MaxRequestsPerMinute = 5;
         private readonly object _lockObj = new object();
+        private readonly Timer _cooldownTimer;
         
         public ObservableCollection<ApiKeyInfo> Keys { get; set; } = new ObservableCollection<ApiKeyInfo>();
 
         public ApiKeyManager()
         {
             LoadKeys();
+            _cooldownTimer = new Timer(UpdateCooldowns, null, 1000, 1000);
+        }
+
+        private void UpdateCooldowns(object state)
+        {
+            lock (_lockObj)
+            {
+                foreach (var k in Keys)
+                {
+                    if (k.Status == KeyStatus.RateLimited)
+                    {
+                        if ((DateTime.Now - k.WindowStart).TotalSeconds >= 60)
+                        {
+                            k.RequestsInLastMinute = 0;
+                            k.Status = KeyStatus.Ready;
+                            Logger.Log($"[ApiKeyManager] Key {k.Key.Substring(0, 5)}... đã hồi phục trạng thái Ready.");
+                        }
+                        k.RaiseCooldownChanged();
+                    }
+                }
+            }
         }
 
         public void LoadKeys()
@@ -70,7 +92,6 @@ namespace AccountingOcrTest
                 {
                     foreach (var k in Keys)
                     {
-                        // Fix: reset based on window start time, not last use time
                         if (k.RequestsInLastMinute > 0 && (DateTime.Now - k.WindowStart).TotalSeconds >= 60)
                         {
                             k.RequestsInLastMinute = 0;
@@ -89,11 +110,12 @@ namespace AccountingOcrTest
 
                     if (availableKey != null)
                     {
-                        // Start new tracking window on first request
                         if (availableKey.RequestsInLastMinute == 0)
                             availableKey.WindowStart = DateTime.Now;
 
                         availableKey.RequestsInLastMinute++;
+                        availableKey.TotalRequests++;
+                        availableKey.EstimatedCost += 0.000075; // Baseline Gemini 1.5 Flash cost estimate
                         availableKey.LastUsed = DateTime.Now;
                         Logger.Log($"[ApiKeyManager] Cấp phát Key {availableKey.Key.Substring(0, 5)}... (Lần dùng thứ {availableKey.RequestsInLastMinute}/phút)");
                         
@@ -111,6 +133,18 @@ namespace AccountingOcrTest
             }
         }
 
+        public void RecordSuccess(string key)
+        {
+            lock (_lockObj)
+            {
+                var k = Keys.FirstOrDefault(x => x.Key == key);
+                if (k != null)
+                {
+                    k.SuccessfulRequests++;
+                }
+            }
+        }
+
         public void MarkKeyAsRateLimited(string key)
         {
             lock (_lockObj)
@@ -121,6 +155,7 @@ namespace AccountingOcrTest
                     k.Status = KeyStatus.RateLimited;
                     k.RequestsInLastMinute = MaxRequestsPerMinute;
                     k.WindowStart = DateTime.Now;
+                    k.FailedRequests++;
                     Logger.Log($"[ApiKeyManager] Đánh dấu Key {k.Key.Substring(0, 5)}... gặp lỗi Rate Limit (429/quota). Bắt đầu thời gian chờ 60s.");
                 }
             }
@@ -134,6 +169,7 @@ namespace AccountingOcrTest
                 if (k != null)
                 {
                     k.Status = KeyStatus.Error;
+                    k.FailedRequests++;
                     Logger.Log($"[ApiKeyManager] Đánh dấu Key {k.Key.Substring(0, 5)}... bị lỗi vĩnh viễn (Error/403/400).");
                 }
             }
